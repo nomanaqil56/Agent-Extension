@@ -1,7 +1,8 @@
 {
   "port": 3721,
-  "authToken": "agy_local_secret_token_default",
-  "activeProvider": "fallback",
+  "host": "127.0.0.1",
+  "authToken": "",
+  "activeProvider": "hybrid",
   "approvedDirectories": [
     "D:\\Coding\\Projects\\Personal Projects\\Agent-Extension"
   ],

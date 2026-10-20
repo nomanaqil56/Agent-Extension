@@ -1,5 +1,5 @@
 // Antigravity Browser Agent - Content Script
-// Handles DOM distillation, visual action highlighting, element interaction, and floating HUD overlay
+// Handles DOM distillation, visual action highlighting, element interaction, and page context
 
 (() => {
   if (window.__ANTIGRAVITY_CONTENT_LOADED__) return;
@@ -10,8 +10,6 @@
   // Active highlights cache
   let activeHighlights = [];
   let labeledMarkers = [];
-  let floatingHudHost = null;
-  let isFloatingHudVisible = false;
 
   // Listen for messages from background service worker or sidepanel
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -60,9 +58,6 @@
 
       case 'EXTRACT_TEXT':
         return extractPageContent();
-
-      case 'TOGGLE_FLOATING_HUD':
-        return toggleFloatingHUD();
 
       case 'PING':
         return { status: 'ready', url: window.location.href, title: document.title };
@@ -475,104 +470,6 @@
     labeledMarkers.forEach(m => m.remove());
     labeledMarkers = [];
   }
-
-  // --- 5. Floating HUD Command Center (Alt+Space Summon) ---
-
-  function toggleFloatingHUD() {
-    if (isFloatingHudVisible) {
-      hideFloatingHUD();
-      return { visible: false };
-    } else {
-      showFloatingHUD();
-      return { visible: true };
-    }
-  }
-
-  function showFloatingHUD() {
-    if (!floatingHudHost) {
-      floatingHudHost = document.createElement('div');
-      floatingHudHost.id = 'antigravity-floating-host';
-      const shadow = floatingHudHost.attachShadow({ mode: 'open' });
-
-      // Load HUD iframe pointing to web accessible floating.html
-      const iframeUrl = chrome.runtime.getURL('floating/floating.html');
-      shadow.innerHTML = `
-        <style>
-          :host {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100vw;
-            height: 100vh;
-            pointer-events: none;
-            z-index: 2147483647;
-            display: flex;
-            justify-content: center;
-            align-items: flex-start;
-            padding-top: 60px;
-          }
-          .floating-frame {
-            pointer-events: auto;
-            border: none;
-            width: 720px;
-            max-width: 90vw;
-            height: 480px;
-            border-radius: 16px;
-            box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.8), 0 0 30px rgba(0, 242, 254, 0.35);
-            background: transparent;
-            transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
-            transform: translateY(-20px) scale(0.96);
-            opacity: 0;
-          }
-          .floating-frame.active {
-            transform: translateY(0) scale(1);
-            opacity: 1;
-          }
-        </style>
-        <iframe class="floating-frame" src="${iframeUrl}"></iframe>
-      `;
-
-      document.body.appendChild(floatingHudHost);
-
-      // Listen for close message from iframe
-      window.addEventListener('message', (event) => {
-        if (event.data?.type === 'ANTIGRAVITY_CLOSE_HUD') {
-          hideFloatingHUD();
-        }
-      });
-    }
-
-    const frame = floatingHudHost.shadowRoot.querySelector('.floating-frame');
-    floatingHudHost.style.display = 'flex';
-    requestAnimationFrame(() => {
-      frame.classList.add('active');
-    });
-    isFloatingHudVisible = true;
-  }
-
-  function hideFloatingHUD() {
-    if (floatingHudHost) {
-      const frame = floatingHudHost.shadowRoot.querySelector('.floating-frame');
-      if (frame) {
-        frame.classList.remove('active');
-      }
-      setTimeout(() => {
-        if (floatingHudHost) floatingHudHost.style.display = 'none';
-      }, 200);
-    }
-    isFloatingHudVisible = false;
-  }
-
-  // Keyboard shortcut listener on page: Alt+Space toggles floating HUD
-  window.addEventListener('keydown', (e) => {
-    if (e.altKey && e.code === 'Space') {
-      e.preventDefault();
-      toggleFloatingHUD();
-    }
-    if (e.key === 'Escape' && isFloatingHudVisible) {
-      hideFloatingHUD();
-    }
-  });
 
   function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));

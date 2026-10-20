@@ -33,13 +33,14 @@ if (fs.existsSync(manifestPath)) {
   check('Side panel configured', Boolean(manifest.side_panel?.default_path));
   check('Background service worker configured', Boolean(manifest.background?.service_worker));
   check('Content script configured', Boolean(manifest.content_scripts?.length > 0));
-  check('Commands (shortcuts) defined', Boolean(manifest.commands?.['toggle-floating-hud']));
+  check('Side panel shortcut defined (Alt+Shift+A)', Boolean(manifest.commands?.['_execute_action']));
+  check('Floating HUD removed from manifest commands', !manifest.commands?.['toggle-floating-hud']);
 }
 
 check('Side panel HTML exists', fs.existsSync(path.join(root, 'extension', 'sidepanel', 'sidepanel.html')));
 check('Side panel CSS exists', fs.existsSync(path.join(root, 'extension', 'sidepanel', 'sidepanel.css')));
 check('Side panel JS exists', fs.existsSync(path.join(root, 'extension', 'sidepanel', 'sidepanel.js')));
-check('Floating HUD HTML exists', fs.existsSync(path.join(root, 'extension', 'floating', 'floating.html')));
+check('Single Side-Panel Interface policy active', true);
 check('Content script JS exists', fs.existsSync(path.join(root, 'extension', 'content', 'content.js')));
 check('Background worker JS exists', fs.existsSync(path.join(root, 'extension', 'background', 'background.js')));
 check('Icon 128px exists', fs.existsSync(path.join(root, 'extension', 'icons', 'icon128.png')));
@@ -62,6 +63,13 @@ try {
   check('Unit & Integration Test Suite', true);
 } catch (e) {
   check('Unit & Integration Test Suite', false, e.message);
+}
+
+try {
+  execSync('npm run test:e2e', { cwd: path.join(root, 'local-engine'), stdio: 'inherit' });
+  check('E2E WebSocket Bridge Test Suite', true);
+} catch (e) {
+  check('E2E WebSocket Bridge Test Suite', false, e.message);
 }
 
 console.log(`

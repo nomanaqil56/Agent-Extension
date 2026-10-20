@@ -8,6 +8,15 @@ class EmergencyCoordinator {
     this.auditLogger = auditLogger;
     this.activeChildProcesses = new Map(); // pid -> { process, command, startTime }
     this.activeAbortControllers = new Set();
+    this.isHalted = false;
+  }
+
+  isEmergencyHalted() {
+    return this.isHalted;
+  }
+
+  resetHalt() {
+    this.isHalted = false;
   }
 
   // Register an active child process
@@ -45,6 +54,7 @@ class EmergencyCoordinator {
   // Execute full Emergency Stop
   async emergencyStop() {
     console.warn('\n🚨 [Antigravity Emergency] EMERGENCY STOP INITIATED 🚨');
+    this.isHalted = true;
     const stoppedProcesses = [];
 
     // 1. Abort all agent task loops

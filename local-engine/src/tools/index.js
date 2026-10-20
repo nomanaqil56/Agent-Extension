@@ -80,6 +80,14 @@ class ToolRegistry {
       required: ['filePath']
     }, (p) => this.filesTool.fileInfo(p));
 
+    this.addTool('delete_file', 'Delete a file within an approved directory (requires approval)', {
+      type: 'object',
+      properties: {
+        filePath: { type: 'string', description: 'Path to file to delete' }
+      },
+      required: ['filePath']
+    }, (p) => this.filesTool.deleteFile(p));
+
     // 2. Terminal & Developer Tools
     this.addTool('execute_command', 'Execute a command in PowerShell/Terminal within an approved directory', {
       type: 'object',
@@ -220,7 +228,11 @@ class ToolRegistry {
   }
 
   // Execute tool with security permission check & audit logging
-  async execute(toolName, params = {}, onApprovalNeeded = null) {
+  async execute(toolName, params = {}, onApprovalNeeded = null, abortSignal = null) {
+    if (abortSignal?.aborted || (this.emergencyCoordinator && this.emergencyCoordinator.isEmergencyHalted())) {
+      throw new Error('Action cancelled: Emergency Stop is active or task was aborted.');
+    }
+
     const tool = this.tools.get(toolName);
     if (!tool) {
       throw new Error(`Tool not found: "${toolName}"`);
@@ -244,21 +256,43 @@ class ToolRegistry {
     }
 
     if (risk.needsApproval) {
+      if (!onApprovalNeeded) {
+        throw new Error(`Action "${toolName}" requires user approval: ${risk.reason}`);
+      }
+
       // Create interactive approval request
       const { record, promise } = this.permissionManager.createApprovalRequest(toolName, params, risk);
 
-      if (onApprovalNeeded) {
-        onApprovalNeeded({
-          approvalId: record.approvalId,
-          tool: toolName,
-          riskLevel: risk.riskLevel,
-          actionType: risk.reason,
-          details: params
-        });
-      }
+      onApprovalNeeded({
+        approvalId: record.approvalId,
+        tool: toolName,
+        riskLevel: risk.riskLevel,
+        actionType: risk.reason,
+        details: params
+      });
 
-      // Wait for user confirmation in extension
-      await promise;
+      // Handle abort while waiting for approval
+      let abortHandler;
+      const abortPromise = new Promise((_, reject) => {
+        if (abortSignal?.aborted) {
+          reject(new Error('Action cancelled by user abort or Emergency Stop.'));
+        } else if (abortSignal) {
+          abortHandler = () => reject(new Error('Action cancelled by user abort or Emergency Stop.'));
+          abortSignal.addEventListener('abort', abortHandler, { once: true });
+        }
+      });
+
+      try {
+        await Promise.race([promise, abortPromise]);
+      } finally {
+        if (abortSignal && abortHandler) {
+          abortSignal.removeEventListener('abort', abortHandler);
+        }
+      }
+    }
+
+    if (abortSignal?.aborted || (this.emergencyCoordinator && this.emergencyCoordinator.isEmergencyHalted())) {
+      throw new Error('Action cancelled: Emergency Stop is active or task was aborted.');
     }
 
     // 2. Execute tool

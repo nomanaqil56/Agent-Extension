@@ -203,6 +203,17 @@ document.addEventListener('DOMContentLoaded', () => {
         updateEngineStatus(msg.connected, msg.port);
         break;
 
+      case 'PROVIDER_ACTIVE':
+        if (msg.provider) {
+          const isFback = msg.isFallback ? ' (Autonomous Fallback)' : '';
+          appendSystemNotice(`Active Provider: ${msg.provider.toUpperCase()}${isFback}`);
+        }
+        break;
+
+      case 'PROVIDER_SWITCH':
+        appendSystemNotice(`⚠️ Provider switched to ${msg.provider}: ${msg.reason || ''}`);
+        break;
+
       case 'AGENT_THOUGHT':
         renderAgentThought(msg.thought);
         break;
@@ -631,12 +642,12 @@ document.addEventListener('DOMContentLoaded', () => {
       'ollamaUrl',
       'audioFeedback'
     ], (res) => {
-      if (res.enginePort) settingEngineUrl.value = `ws://localhost:${res.enginePort}`;
+      const port = res.enginePort || 3721;
+      settingEngineUrl.value = `ws://127.0.0.1:${port}`;
       if (res.authToken) settingAuthToken.value = res.authToken;
-      if (res.selectedProvider) {
-        settingProvider.value = res.selectedProvider;
-        modelSelect.value = res.selectedProvider;
-      }
+      const provider = res.selectedProvider || 'hybrid';
+      settingProvider.value = provider;
+      modelSelect.value = provider;
       if (res.geminiKey) settingGeminiKey.value = res.geminiKey;
       if (res.anthropicKey) settingAnthropicKey.value = res.anthropicKey;
       if (res.openAiKey) settingOpenAiKey.value = res.openAiKey;

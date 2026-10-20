@@ -16,11 +16,14 @@ const ToolRegistry = require('./tools');
 const MemoryManager = require('./agent/memory');
 const AgentOrchestrator = require('./agent/orchestrator');
 
+const crypto = require('crypto');
+
 // Load configuration
 const configPath = path.join(__dirname, '..', 'config.json');
 let config = {
   port: 3721,
-  authToken: 'agy_local_secret_token_default',
+  host: '127.0.0.1',
+  authToken: '',
   approvedDirectories: [process.cwd()],
   approvedApplications: ['code', 'notepad', 'calc', 'git']
 };
@@ -35,7 +38,14 @@ try {
 }
 
 const PORT = parseInt(process.env.ENGINE_PORT || config.port, 10) || 3721;
-const AUTH_TOKEN = process.env.ENGINE_AUTH_TOKEN || config.authToken || 'agy_local_secret_token_default';
+const HOST = process.env.ENGINE_HOST || config.host || '127.0.0.1';
+
+// Token setup: use configured token, or generate secure random token if empty
+let AUTH_TOKEN = (process.env.ENGINE_AUTH_TOKEN || config.authToken || '').trim();
+if (!AUTH_TOKEN) {
+  AUTH_TOKEN = crypto.randomBytes(32).toString('hex');
+  console.log(`[Server] Generated secure ephemeral token for session: ${AUTH_TOKEN.slice(0, 8)}...`);
+}
 
 // Initialize Security, Storage & Execution Core
 const permissionManager = new PermissionManager(config);
@@ -60,7 +70,28 @@ const orchestrator = new AgentOrchestrator(toolRegistry, memoryManager, config);
 
 // Initialize Express App
 const app = express();
-app.use(cors());
+
+// Restrict CORS strictly to extension origins and local loopback
+const allowedOriginPatterns = [
+  /^chrome-extension:\/\//,
+  /^moz-extension:\/\//,
+  /^http:\/\/localhost(:\d+)?$/,
+  /^http:\/\/127\.0\.0\.1(:\d+)?$/
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow local CLI/scripts/tests with no origin header
+    if (!origin) return callback(null, true);
+    const isAllowed = allowedOriginPatterns.some(pattern => pattern.test(origin));
+    if (isAllowed) {
+      return callback(null, true);
+    }
+    return callback(new Error('CORS policy: Access restricted to authorized extension and local loopback origins.'));
+  },
+  credentials: true
+}));
+
 app.use(express.json());
 
 // Token Authentication Middleware for HTTP
@@ -76,14 +107,25 @@ function authenticateHttp(req, res, next) {
 }
 
 // REST Endpoints
+// Unauthenticated Health: minimized info to prevent reconnaissance
 app.get('/health', (req, res) => {
+  res.json({
+    status: 'ONLINE',
+    version: '1.0.0'
+  });
+});
+
+// Authenticated engine details
+app.get('/engine-info', authenticateHttp, (req, res) => {
   res.json({
     status: 'ONLINE',
     version: '1.0.0',
     port: PORT,
+    host: HOST,
     extensionConnected: extensionClient !== null && extensionClient.readyState === 1,
     approvedDirectories: permissionManager.approvedDirectories,
-    toolsCount: toolRegistry.tools.size
+    toolsCount: toolRegistry.tools.size,
+    activeProvider: config.activeProvider || 'hybrid'
   });
 });
 
@@ -103,11 +145,12 @@ app.post('/task', authenticateHttp, async (req, res) => {
   const { task, provider } = req.body;
   if (!task) return res.status(400).json({ error: 'Task is required' });
 
+  emergencyCoordinator.resetHalt();
   const abortController = emergencyCoordinator.createAbortController();
   try {
     const result = await orchestrator.runTask({
       task,
-      providerName: provider || config.activeProvider,
+      providerName: provider || config.activeProvider || 'hybrid',
       context: req.body.context || {},
       abortSignal: abortController.signal
     });
@@ -126,7 +169,7 @@ const wss = new WebSocketServer({ noServer: true });
 // WebSocket Upgrade & Authentication
 server.on('upgrade', (request, socket, head) => {
   try {
-    const url = new URL(request.url, `http://${request.headers.host}`);
+    const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
     const token = url.searchParams.get('token');
 
     if (token !== AUTH_TOKEN) {
@@ -186,16 +229,19 @@ wss.on('connection', (ws, req) => {
           await emergencyCoordinator.emergencyStop();
           ws.send(JSON.stringify({
             type: 'TASK_COMPLETE',
-            summary: '🛑 Execution halted immediately by Emergency Stop.'
+            summary: '🛑 Execution halted immediately by Emergency Stop.',
+            halted: true,
+            success: false
           }));
           break;
 
         case 'USER_TASK': {
+          emergencyCoordinator.resetHalt();
           currentTaskAbort = emergencyCoordinator.createAbortController();
           try {
             await orchestrator.runTask({
               task: msg.task,
-              providerName: msg.provider || config.activeProvider || 'fallback',
+              providerName: msg.provider || config.activeProvider || 'hybrid',
               context: msg.context || {},
               clientWs: ws,
               abortSignal: currentTaskAbort.signal
@@ -242,17 +288,18 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-// Start listening
-server.listen(PORT, () => {
+// Start listening - strictly bound to loopback HOST (127.0.0.1) unless intentional override
+server.listen(PORT, HOST, () => {
   console.log(`
 ==========================================================
    🚀 ANTIGRAVITY LOCAL AGENT ENGINE ONLINE
 ==========================================================
+   Host:            ${HOST} (Loopback only)
    Port:            ${PORT}
-   WebSocket:       ws://localhost:${PORT}?token=***
-   Health Endpoint: http://localhost:${PORT}/health
+   WebSocket:       ws://${HOST}:${PORT}?token=***
+   Health Endpoint: http://${HOST}:${PORT}/health
    Approved Scope:  ${permissionManager.approvedDirectories.join(', ')}
-   Active Provider: ${config.activeProvider}
+   Active Provider: ${config.activeProvider || 'hybrid'}
 ==========================================================
 `);
 });
@@ -271,3 +318,15 @@ process.on('SIGTERM', async () => {
   await emergencyCoordinator.emergencyStop();
   process.exit(0);
 });
+
+module.exports = {
+  app,
+  server,
+  permissionManager,
+  emergencyCoordinator,
+  toolRegistry,
+  orchestrator,
+  PORT,
+  HOST,
+  AUTH_TOKEN
+};

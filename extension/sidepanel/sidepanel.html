@@ -50,11 +50,12 @@
 
       <div class="agy-provider-selector">
         <select id="model-select" class="agy-select">
+          <option value="hybrid" selected>Hybrid AI (Auto Routing)</option>
           <option value="gemini">Gemini 2.0 Flash</option>
           <option value="claude">Claude 3.5 Sonnet</option>
           <option value="openai">GPT-4o</option>
           <option value="ollama">Ollama (Local LLM)</option>
-          <option value="fallback" selected>Autonomous Engine</option>
+          <option value="fallback">Autonomous Engine</option>
         </select>
       </div>
     </div>
@@ -157,7 +158,7 @@
             </div>
           </div>
           <div class="agy-input-footer">
-            <span class="agy-shortcut-hint"><kbd>Alt+Space</kbd> Floating HUD · <kbd>Enter</kbd> Send</span>
+            <span class="agy-shortcut-hint"><kbd>Enter</kbd> Send · <kbd>Shift+Enter</kbd> New line</span>
             <span id="voice-state-hint" class="agy-voice-hint" style="display:none;">Listening...</span>
           </div>
         </div>
@@ -210,17 +211,18 @@
         <div class="agy-settings-form">
           <div class="agy-form-group">
             <label>Local Agent Engine WebSocket URL</label>
-            <input type="text" id="setting-engine-url" class="agy-input" value="ws://localhost:3721">
+            <input type="text" id="setting-engine-url" class="agy-input" value="ws://127.0.0.1:3721">
           </div>
 
           <div class="agy-form-group">
             <label>Security Authentication Token</label>
-            <input type="password" id="setting-auth-token" class="agy-input" value="agy_local_secret_token_default">
+            <input type="password" id="setting-auth-token" class="agy-input" placeholder="Token from engine setup or leave empty for auto">
           </div>
 
           <div class="agy-form-group">
             <label>Default AI Provider</label>
             <select id="setting-provider" class="agy-select full-width">
+              <option value="hybrid" selected>Hybrid AI (Auto Routing)</option>
               <option value="fallback">Autonomous Engine (Zero-Config Built-in)</option>
               <option value="gemini">Google Gemini 2.0</option>
               <option value="claude">Anthropic Claude 3.5 Sonnet</option>

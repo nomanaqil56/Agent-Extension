@@ -11,18 +11,52 @@ class AgentOrchestrator {
   }
 
   // Execute full agent task pipeline
-  async runTask({ task, providerName = 'fallback', context = {}, clientWs = null, abortSignal = null }) {
-    console.log(`\n[Agent Orchestrator] Starting task: "${task}" (Provider: ${providerName})`);
+  async runTask({ task, providerName = 'hybrid', context = {}, clientWs = null, abortSignal = null }) {
+    console.log(`\n[Agent Orchestrator] Starting task: "${task}" (Requested: ${providerName})`);
 
     const notify = (msg) => {
       if (clientWs && clientWs.readyState === 1) { // 1 = OPEN
-        clientWs.send(JSON.stringify(msg));
+        try {
+          clientWs.send(JSON.stringify(msg));
+        } catch (e) {
+          console.warn('[Orchestrator] Notification failed:', e.message);
+        }
       }
     };
 
-    const provider = createProvider(providerName, this.config, this.toolRegistry);
+    if (abortSignal?.aborted) {
+      notify({
+        type: 'TASK_COMPLETE',
+        success: false,
+        aborted: true,
+        summary: '🛑 Task halted: Emergency Stop is active.'
+      });
+      return { success: false, aborted: true, summary: 'Task halted by Emergency Stop' };
+    }
 
-    // If using autonomous fallback provider
+    const { provider, activeProviderName, isFallback, fallbackReason } = createProvider(
+      providerName,
+      this.config,
+      this.toolRegistry
+    );
+
+    // Report active provider and any fallback switch
+    notify({
+      type: 'PROVIDER_ACTIVE',
+      provider: activeProviderName,
+      requestedProvider: providerName,
+      isFallback: Boolean(isFallback),
+      reason: fallbackReason || null
+    });
+
+    if (isFallback && fallbackReason) {
+      notify({
+        type: 'AGENT_MESSAGE',
+        message: `ℹ️ ${fallbackReason}`
+      });
+    }
+
+    // If using autonomous engine
     if (provider instanceof FallbackAgentProvider) {
       return this.runAutonomousFallback(task, context, provider, notify, abortSignal);
     }
@@ -33,6 +67,16 @@ class AgentOrchestrator {
 
   // --- Autonomous Engine Execution ---
   async runAutonomousFallback(task, context, provider, notify, abortSignal) {
+    if (abortSignal?.aborted) {
+      notify({
+        type: 'TASK_COMPLETE',
+        success: false,
+        aborted: true,
+        summary: '🛑 Task execution halted by Emergency Stop.'
+      });
+      return { success: false, aborted: true, summary: 'Task halted by Emergency Stop' };
+    }
+
     notify({
       type: 'AGENT_THOUGHT',
       thought: 'Autonomous Engine: Analyzing browser context, active DOM, and local environment to formulate task plan.'
@@ -40,10 +84,18 @@ class AgentOrchestrator {
 
     const planSteps = await provider.planTask(task, context);
     const stepResults = [];
+    let taskFailed = false;
+    let failureReason = '';
 
     for (let i = 0; i < planSteps.length; i++) {
       if (abortSignal?.aborted) {
-        throw new Error('Task was halted by Emergency Stop.');
+        notify({
+          type: 'TASK_COMPLETE',
+          success: false,
+          aborted: true,
+          summary: '🛑 Task execution halted by Emergency Stop.'
+        });
+        return { success: false, aborted: true, summary: 'Task halted by Emergency Stop', steps: stepResults };
       }
 
       const step = planSteps[i];
@@ -70,7 +122,8 @@ class AgentOrchestrator {
               type: 'APPROVAL_REQUEST',
               ...approvalReq
             });
-          }
+          },
+          abortSignal
         );
 
         notify({
@@ -82,7 +135,8 @@ class AgentOrchestrator {
         stepResults.push({
           tool: step.tool,
           params: step.params,
-          result: res.result
+          result: res.result,
+          success: true
         });
       } catch (err) {
         notify({
@@ -90,19 +144,52 @@ class AgentOrchestrator {
           tool: step.tool,
           error: err.message
         });
+
         stepResults.push({
           tool: step.tool,
           params: step.params,
-          error: err.message
+          error: err.message,
+          success: false
         });
-        break; // Stop on critical failure
+
+        taskFailed = true;
+        failureReason = err.message;
+        break; // Stop on critical failure or denial
+      }
+
+      if (abortSignal?.aborted) {
+        notify({
+          type: 'TASK_COMPLETE',
+          success: false,
+          aborted: true,
+          summary: '🛑 Task execution halted by Emergency Stop.'
+        });
+        return { success: false, aborted: true, summary: 'Task halted by Emergency Stop', steps: stepResults };
       }
     }
 
+    if (taskFailed) {
+      const isDenied = failureReason.toLowerCase().includes('denied');
+      const failSummary = isDenied
+        ? `🛑 Action denied: ${failureReason}`
+        : `❌ Task failed at step: ${failureReason}`;
+
+      notify({
+        type: 'TASK_COMPLETE',
+        success: false,
+        summary: failSummary,
+        steps: stepResults
+      });
+      return { success: false, summary: failSummary, steps: stepResults };
+    }
+
+    // Verify and synthesize response
     const summary = provider.synthesizeResponse(task, stepResults);
     notify({
       type: 'TASK_COMPLETE',
-      summary
+      success: true,
+      summary,
+      steps: stepResults
     });
 
     return { success: true, summary, steps: stepResults };
@@ -129,7 +216,13 @@ class AgentOrchestrator {
 
     while (currentStep < maxSteps) {
       if (abortSignal?.aborted) {
-        throw new Error('Task was halted by Emergency Stop.');
+        notify({
+          type: 'TASK_COMPLETE',
+          success: false,
+          aborted: true,
+          summary: '🛑 Task execution halted by Emergency Stop.'
+        });
+        return { success: false, aborted: true, summary: 'Task halted by Emergency Stop' };
       }
       currentStep++;
 
@@ -138,12 +231,27 @@ class AgentOrchestrator {
         stepDecision = await provider.generateStep(messages, tools);
       } catch (llmErr) {
         notify({
+          type: 'PROVIDER_SWITCH',
+          provider: 'autonomous',
+          reason: `LLM Error (${provider.constructor.name}): ${llmErr.message}. Switching to Built-in Autonomous Engine.`
+        });
+        notify({
           type: 'AGENT_MESSAGE',
-          message: `⚠️ LLM Error: ${llmErr.message}. Switching to Autonomous Engine fallback.`
+          message: `⚠️ Provider Error: ${llmErr.message}. Continuing with Built-in Autonomous Engine.`
         });
         // Gracefully fall back to built-in autonomous engine
         const fallback = new FallbackAgentProvider(this.toolRegistry);
         return this.runAutonomousFallback(task, context, fallback, notify, abortSignal);
+      }
+
+      if (abortSignal?.aborted) {
+        notify({
+          type: 'TASK_COMPLETE',
+          success: false,
+          aborted: true,
+          summary: '🛑 Task execution halted by Emergency Stop.'
+        });
+        return { success: false, aborted: true, summary: 'Task halted by Emergency Stop' };
       }
 
       if (stepDecision.type === 'tool_call') {
@@ -169,7 +277,8 @@ class AgentOrchestrator {
                 type: 'APPROVAL_REQUEST',
                 ...approvalReq
               });
-            }
+            },
+            abortSignal
           );
 
           notify({
@@ -178,7 +287,7 @@ class AgentOrchestrator {
             result: toolRes.result
           });
 
-          // Append to conversation
+          // Append observation to conversation history
           messages.push({
             role: 'assistant',
             content: `Called tool ${tool} with parameters: ${JSON.stringify(params)}`
@@ -193,24 +302,47 @@ class AgentOrchestrator {
             tool,
             error: toolErr.message
           });
+
+          if (abortSignal?.aborted) {
+            notify({
+              type: 'TASK_COMPLETE',
+              success: false,
+              aborted: true,
+              summary: '🛑 Task execution halted by Emergency Stop.'
+            });
+            return { success: false, aborted: true, summary: 'Task halted by Emergency Stop' };
+          }
+
+          // If action was denied by user, stop loop
+          if (toolErr.message.toLowerCase().includes('denied')) {
+            const deniedSummary = `🛑 Task stopped: ${toolErr.message}`;
+            notify({
+              type: 'TASK_COMPLETE',
+              success: false,
+              summary: deniedSummary
+            });
+            return { success: false, summary: deniedSummary };
+          }
+
           messages.push({
             role: 'user',
             content: `Error executing ${tool}: ${toolErr.message}`
           });
         }
       } else {
-        // Final message
+        // Final verified message from model
         notify({
           type: 'TASK_COMPLETE',
+          success: true,
           summary: stepDecision.content
         });
         return { success: true, summary: stepDecision.content };
       }
     }
 
-    const fallbackSummary = 'Task reached maximum reasoning iterations.';
-    notify({ type: 'TASK_COMPLETE', summary: fallbackSummary });
-    return { success: true, summary: fallbackSummary };
+    const boundSummary = 'Task reached maximum reasoning iterations (8 steps).';
+    notify({ type: 'TASK_COMPLETE', success: false, summary: boundSummary });
+    return { success: false, summary: boundSummary };
   }
 }
 

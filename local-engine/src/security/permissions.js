@@ -7,24 +7,79 @@ class PermissionManager {
   constructor(config = {}) {
     this.config = config;
     this.approvedDirectories = (config.approvedDirectories || [process.cwd()]).map(d => path.resolve(d));
-    this.approvedApplications = new Set(config.approvedApplications || ['code', 'notepad', 'calc', 'git']);
+    this.approvedApplications = new Set(
+      (config.approvedApplications || ['code', 'notepad', 'calc', 'git']).map(a => a.toLowerCase())
+    );
     this.pendingApprovals = new Map();
     this.sessionAuthorizations = new Set();
   }
 
+  // Canonicalize a path and resolve symlinks defensively
+  canonicalizePath(targetPath) {
+    if (!targetPath || typeof targetPath !== 'string') return null;
+    try {
+      const resolved = path.resolve(targetPath);
+      if (fs.existsSync(resolved)) {
+        return fs.realpathSync(resolved);
+      }
+      // If path does not exist yet (e.g. creating a new file), resolve the closest existing parent
+      let current = resolved;
+      const unexistingParts = [];
+      while (!fs.existsSync(current)) {
+        const parent = path.dirname(current);
+        if (parent === current) break;
+        unexistingParts.unshift(path.basename(current));
+        current = parent;
+      }
+      if (fs.existsSync(current)) {
+        const realParent = fs.realpathSync(current);
+        return path.join(realParent, ...unexistingParts);
+      }
+      return resolved;
+    } catch (e) {
+      return path.resolve(targetPath);
+    }
+  }
+
+  // Normalize path parameter aliases across different tool schemas
+  normalizeFilePath(params = {}) {
+    if (!params || typeof params !== 'object') return null;
+    return params.filePath || params.path || params.targetFile || params.targetPath || params.file || null;
+  }
+
+  // Normalize directory parameter aliases
+  normalizeDirPath(params = {}) {
+    if (!params || typeof params !== 'object') return '.';
+    return params.dirPath || params.directory || params.path || params.cwd || '.';
+  }
+
   // Add a user-approved folder scope
   addApprovedDirectory(dirPath) {
+    if (!dirPath || typeof dirPath !== 'string') return;
     const resolved = path.resolve(dirPath);
     if (!this.approvedDirectories.includes(resolved)) {
       this.approvedDirectories.push(resolved);
     }
   }
 
-  // Validate if a path falls within approved directories
+  // Validate if a path falls within approved directories (including symlink resolution and traversal defense)
   isPathApproved(targetPath) {
-    const resolved = path.resolve(targetPath);
+    if (!targetPath || typeof targetPath !== 'string') return false;
+
+    // Detect basic null bytes or malformed inputs
+    if (targetPath.includes('\0')) return false;
+
+    const canonicalTarget = this.canonicalizePath(targetPath);
+    if (!canonicalTarget) return false;
+
+    const isWindows = process.platform === 'win32';
+    const normTarget = isWindows ? canonicalTarget.toLowerCase() : canonicalTarget;
+
     return this.approvedDirectories.some(approved => {
-      const relative = path.relative(approved, resolved);
+      const canonicalApproved = this.canonicalizePath(approved) || approved;
+      const normApproved = isWindows ? canonicalApproved.toLowerCase() : canonicalApproved;
+
+      const relative = path.relative(normApproved, normTarget);
       return !relative.startsWith('..') && !path.isAbsolute(relative);
     });
   }
@@ -32,35 +87,56 @@ class PermissionManager {
   // Analyze risk level for any requested tool action
   analyzeActionRisk(tool, params = {}) {
     switch (tool) {
-      // Safe Browser Operations
+      // Safe Browser Operations & Telemetry
       case 'browser_distill_dom':
       case 'browser_extract_text':
       case 'browser_get_page_context':
       case 'browser_list_tabs':
       case 'browser_screenshot':
+      case 'browser_scroll':
       case 'get_system_info':
       case 'clipboard_read':
+      case 'clipboard_write':
+        return { allowed: true, needsApproval: false, riskLevel: 'low' };
+
+      // Filesystem Reads & Exploration
       case 'list_files':
-      case 'read_file':
-      case 'search_files':
-      case 'file_info':
-        // Path checks for file reads
-        if (params.path && !this.isPathApproved(params.path)) {
+      case 'search_files': {
+        const dirPath = this.normalizeDirPath(params);
+        if (!this.isPathApproved(dirPath)) {
           return {
             allowed: false,
             needsApproval: true,
             riskLevel: 'high',
-            reason: `Path "${params.path}" is outside approved workspace directories.`
+            reason: `Directory "${dirPath}" is outside approved workspace directories.`
           };
         }
         return { allowed: true, needsApproval: false, riskLevel: 'low' };
+      }
+
+      case 'read_file':
+      case 'file_info': {
+        const filePath = this.normalizeFilePath(params);
+        if (!filePath) {
+          return { allowed: false, needsApproval: false, blocked: true, riskLevel: 'high', reason: 'Missing file path parameter' };
+        }
+        if (!this.isPathApproved(filePath)) {
+          return {
+            allowed: false,
+            needsApproval: true,
+            riskLevel: 'high',
+            reason: `Path "${filePath}" is outside approved workspace directories.`
+          };
+        }
+        return { allowed: true, needsApproval: false, riskLevel: 'low' };
+      }
 
       // Medium Risk: File Writes inside whitelisted directories
       case 'write_file':
       case 'patch_file': {
-        const filePath = params.path || params.targetFile;
+        const filePath = this.normalizeFilePath(params);
         if (!filePath) {
-          return { allowed: false, needsApproval: false, riskLevel: 'high', reason: 'Missing file path parameter' };
+          return { allowed: false, needsApproval: false, blocked: true, riskLevel: 'high', reason: 'Missing file path parameter' };
         }
         if (!this.isPathApproved(filePath)) {
           return {
@@ -83,17 +159,46 @@ class PermissionManager {
 
       // High Risk: File deletion
       case 'delete_file': {
-        return {
-          allowed: false,
-          needsApproval: true,
-          riskLevel: 'high',
-          reason: `Attempting to delete file: "${params.path}"`
-        };
+        const filePath = this.normalizeFilePath(params);
+        if (!filePath) {
+          return { allowed: false, needsApproval: false, blocked: true, riskLevel: 'high', reason: 'Missing file path parameter' };
+        }
+        if (!this.isPathApproved(filePath)) {
+          return {
+            allowed: false,
+            needsApproval: true,
+            riskLevel: 'high',
+            reason: `Attempting to delete file outside approved directories: "${filePath}"`
+          };
+        }
+        if (this.config.security?.requireApprovalForFileDelete !== false) {
+          return {
+            allowed: false,
+            needsApproval: true,
+            riskLevel: 'high',
+            reason: `Attempting to delete file: "${path.basename(filePath)}"`
+          };
+        }
+        return { allowed: true, needsApproval: false, riskLevel: 'high' };
       }
 
       // High Risk: Terminal & Shell Command Execution
       case 'execute_command': {
         const cmd = (params.command || '').trim();
+        if (!cmd) {
+          return { allowed: false, needsApproval: false, blocked: true, riskLevel: 'high', reason: 'Command string is empty' };
+        }
+
+        if (params.cwd && !this.isPathApproved(params.cwd)) {
+          return {
+            allowed: false,
+            needsApproval: false,
+            blocked: true,
+            riskLevel: 'forbidden',
+            reason: `Command working directory "${params.cwd}" is outside approved workspace directories.`
+          };
+        }
+
         // Check for blocked malicious patterns
         const blockedPatterns = this.config.security?.blockedShellPatterns || [];
         for (const pattern of blockedPatterns) {
@@ -145,6 +250,7 @@ class PermissionManager {
       case 'browser_navigate':
       case 'browser_open_tab':
       case 'browser_close_tab':
+      case 'browser_switch_tab':
         return { allowed: true, needsApproval: false, riskLevel: 'low' };
 
       default:

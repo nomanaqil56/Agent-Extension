@@ -4,7 +4,7 @@
 const DEFAULT_ENGINE_PORT = 3721;
 let localEngineWs = null;
 let isConnectedToEngine = false;
-let authToken = 'agy_local_secret_token_default';
+let authToken = '';
 
 // Initialize extension settings & side panel behavior
 chrome.runtime.onInstalled.addListener(async () => {
@@ -18,7 +18,6 @@ chrome.runtime.onInstalled.addListener(async () => {
   // Set default stored configurations
   chrome.storage.local.get(['enginePort', 'authToken', 'selectedProvider'], (res) => {
     if (!res.enginePort) chrome.storage.local.set({ enginePort: DEFAULT_ENGINE_PORT });
-    if (!res.authToken) chrome.storage.local.set({ authToken });
     if (!res.selectedProvider) chrome.storage.local.set({ selectedProvider: 'hybrid' });
   });
 
@@ -34,30 +33,13 @@ chrome.runtime.onStartup.addListener(async () => {
   connectToLocalEngine();
 });
 
-// Handle keyboard shortcuts (Alt+Space, Alt+Shift+A)
-chrome.commands.onCommand.addListener(async (command) => {
-  console.log('[Antigravity Background] Command triggered:', command);
-
-  if (command === 'toggle-floating-hud') {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab && tab.id) {
-      try {
-        await ensureContentScript(tab.id);
-        chrome.tabs.sendMessage(tab.id, { action: 'TOGGLE_FLOATING_HUD' });
-      } catch (err) {
-        console.warn('[Antigravity] Could not toggle HUD on tab:', err);
-      }
-    }
-  }
-});
-
 // --- Local Agent Engine WebSocket Bridge ---
 
 function connectToLocalEngine() {
   chrome.storage.local.get(['enginePort', 'authToken'], (res) => {
     const port = res.enginePort || DEFAULT_ENGINE_PORT;
-    const token = res.authToken || authToken;
-    const wsUrl = `ws://localhost:${port}?token=${encodeURIComponent(token)}`;
+    const token = res.authToken || authToken || '';
+    const wsUrl = `ws://127.0.0.1:${port}?token=${encodeURIComponent(token)}`;
 
     if (localEngineWs) {
       try {
@@ -261,14 +243,14 @@ async function ensureContentScript(tabId) {
   }
 }
 
-// Broadcast message to sidepanel & floating HUD
+// Broadcast message to side panel views
 function broadcastToExtensionViews(message) {
   chrome.runtime.sendMessage(message).catch(() => {
     // Expected when no extension view is open
   });
 }
 
-// Messages from Sidepanel or Floating HUD
+// Messages from Side Panel
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'GET_ENGINE_STATUS') {
     sendResponse({ connected: isConnectedToEngine });

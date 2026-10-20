@@ -86,14 +86,3 @@
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.7) !important;
   pointer-events: none !important;
 }
-
-/* Floating Host Container in Shadow DOM */
-#antigravity-floating-host {
-  position: fixed !important;
-  top: 0 !important;
-  left: 0 !important;
-  width: 100vw !important;
-  height: 100vh !important;
-  pointer-events: none !important;
-  z-index: 2147483647 !important;
-}

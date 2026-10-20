@@ -9,8 +9,9 @@ class FilesTool {
   }
 
   // List files in directory
-  async listFiles({ dirPath = '.', recursive = false, maxDepth = 2 }) {
-    const targetDir = path.resolve(dirPath);
+  async listFiles(params = {}) {
+    const rawPath = params.dirPath || params.directory || params.path || params.cwd || '.';
+    const targetDir = path.resolve(rawPath);
     if (!this.permissionManager.isPathApproved(targetDir)) {
       throw new Error(`Directory "${targetDir}" is outside approved directories.`);
     }
@@ -19,6 +20,8 @@ class FilesTool {
       throw new Error(`Directory does not exist: "${targetDir}"`);
     }
 
+    const recursive = Boolean(params.recursive);
+    const maxDepth = typeof params.maxDepth === 'number' ? params.maxDepth : 2;
     const results = [];
     const walk = (current, depth) => {
       if (depth > maxDepth) return;
@@ -56,8 +59,12 @@ class FilesTool {
   }
 
   // Read file content
-  async readFile({ filePath, maxLines = 500, offset = 0 }) {
-    const resolved = path.resolve(filePath);
+  async readFile(params = {}) {
+    const rawPath = this.permissionManager.normalizeFilePath(params);
+    if (!rawPath) {
+      throw new Error('File path is required');
+    }
+    const resolved = path.resolve(rawPath);
     if (!this.permissionManager.isPathApproved(resolved)) {
       throw new Error(`Read path "${resolved}" is outside approved directories.`);
     }
@@ -71,6 +78,8 @@ class FilesTool {
       throw new Error(`File too large (${(stat.size / 1024 / 1024).toFixed(1)}MB). Max read size is 5MB.`);
     }
 
+    const maxLines = typeof params.maxLines === 'number' ? params.maxLines : 500;
+    const offset = typeof params.offset === 'number' ? params.offset : 0;
     const raw = fs.readFileSync(resolved, 'utf8');
     const lines = raw.split(/\r?\n/);
     const sliced = lines.slice(offset, offset + maxLines);
@@ -85,12 +94,17 @@ class FilesTool {
   }
 
   // Write or overwrite file
-  async writeFile({ filePath, content }) {
-    const resolved = path.resolve(filePath);
+  async writeFile(params = {}) {
+    const rawPath = this.permissionManager.normalizeFilePath(params);
+    if (!rawPath) {
+      throw new Error('File path is required');
+    }
+    const resolved = path.resolve(rawPath);
     if (!this.permissionManager.isPathApproved(resolved)) {
       throw new Error(`Write path "${resolved}" is outside approved directories.`);
     }
 
+    const content = params.content !== undefined ? String(params.content) : '';
     const dir = path.dirname(resolved);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -108,14 +122,24 @@ class FilesTool {
   }
 
   // Patch/Replace text inside file
-  async patchFile({ filePath, targetContent, replacementContent }) {
-    const resolved = path.resolve(filePath);
+  async patchFile(params = {}) {
+    const rawPath = this.permissionManager.normalizeFilePath(params);
+    if (!rawPath) {
+      throw new Error('File path is required');
+    }
+    const resolved = path.resolve(rawPath);
     if (!this.permissionManager.isPathApproved(resolved)) {
       throw new Error(`Patch path "${resolved}" is outside approved directories.`);
     }
 
     if (!fs.existsSync(resolved)) {
       throw new Error(`File does not exist: "${resolved}"`);
+    }
+
+    const targetContent = params.targetContent;
+    const replacementContent = params.replacementContent !== undefined ? String(params.replacementContent) : '';
+    if (targetContent === undefined || targetContent === null) {
+      throw new Error('targetContent is required for patch_file');
     }
 
     const original = fs.readFileSync(resolved, 'utf8');
@@ -134,12 +158,17 @@ class FilesTool {
   }
 
   // Search across files (simple grep)
-  async searchFiles({ query, dirPath = '.', filePattern = null }) {
-    const targetDir = path.resolve(dirPath);
+  async searchFiles(params = {}) {
+    const query = params.query;
+    if (!query) throw new Error('Search query is required');
+
+    const rawDir = params.dirPath || params.directory || params.path || '.';
+    const targetDir = path.resolve(rawDir);
     if (!this.permissionManager.isPathApproved(targetDir)) {
       throw new Error(`Search dir "${targetDir}" is outside approved directories.`);
     }
 
+    const filePattern = params.filePattern || null;
     const matches = [];
     const regex = new RegExp(query, 'i');
 
@@ -180,8 +209,12 @@ class FilesTool {
   }
 
   // Get file metadata
-  async fileInfo({ filePath }) {
-    const resolved = path.resolve(filePath);
+  async fileInfo(params = {}) {
+    const rawPath = this.permissionManager.normalizeFilePath(params);
+    if (!rawPath) {
+      throw new Error('File path is required');
+    }
+    const resolved = path.resolve(rawPath);
     if (!this.permissionManager.isPathApproved(resolved)) {
       throw new Error(`Path "${resolved}" is outside approved directories.`);
     }
@@ -202,8 +235,12 @@ class FilesTool {
   }
 
   // Delete file (requires approval)
-  async deleteFile({ filePath }) {
-    const resolved = path.resolve(filePath);
+  async deleteFile(params = {}) {
+    const rawPath = this.permissionManager.normalizeFilePath(params);
+    if (!rawPath) {
+      throw new Error('File path is required');
+    }
+    const resolved = path.resolve(rawPath);
     if (!this.permissionManager.isPathApproved(resolved)) {
       throw new Error(`Delete path "${resolved}" is outside approved directories.`);
     }

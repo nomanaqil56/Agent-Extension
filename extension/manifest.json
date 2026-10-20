@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Antigravity Browser Agent",
   "version": "1.0.0",
-  "description": "Cinematic AI Command Center & Autonomous Browser Agent with Local Desktop Companion, Multi-tab Navigation, Voice, and Permissions.",
+  "description": "Unified AI Side Panel & Autonomous Browser Agent with Local Desktop Companion, Hybrid LLMs, Multi-tab Navigation, Voice, and Permissions.",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
@@ -17,7 +17,9 @@
   ],
   "host_permissions": [
     "<all_urls>",
+    "http://127.0.0.1:3721/*",
     "http://localhost:3721/*",
+    "ws://127.0.0.1:3721/*",
     "ws://localhost:3721/*"
   ],
   "background": {
@@ -41,13 +43,6 @@
         "mac": "Alt+Shift+A"
       },
       "description": "Open Antigravity Side Panel"
-    },
-    "toggle-floating-hud": {
-      "suggested_key": {
-        "default": "Alt+Space",
-        "mac": "Alt+Space"
-      },
-      "description": "Toggle Floating AI Command Center HUD"
     }
   },
   "content_scripts": [
@@ -61,9 +56,6 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "floating/floating.html",
-        "floating/floating.css",
-        "floating/floating.js",
         "icons/*"
       ],
       "matches": ["<all_urls>"]
