@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Antigravity Floating HUD</title>
+  <link rel="stylesheet" href="floating.css">
+</head>
+<body>
+  <div class="agy-hud-window">
+    <!-- Top Bar -->
+    <div class="agy-hud-header">
+      <div class="agy-hud-brand">
+        <span class="agy-hud-glow-dot"></span>
+        <span class="agy-hud-title">ANTIGRAVITY COMMAND</span>
+      </div>
+      <div class="agy-hud-controls">
+        <span class="agy-hud-badge" id="hud-status">READY</span>
+        <button id="hud-stop-btn" class="agy-hud-stop" title="Emergency Stop">STOP</button>
+        <button id="hud-close-btn" class="agy-hud-close" title="Close (Esc)">✕</button>
+      </div>
+    </div>
+
+    <!-- Input Box -->
+    <div class="agy-hud-input-row">
+      <div class="agy-hud-prompt-symbol">❯</div>
+      <input type="text" id="hud-input" placeholder="Type instruction (e.g. 'Click Sign In', 'Search flights', 'Run tests')..." autofocus autocomplete="off">
+      <button id="hud-voice-btn" class="agy-hud-btn" title="Voice Dictation">🎤</button>
+      <button id="hud-send-btn" class="agy-hud-btn send" title="Execute (Enter)">↵</button>
+    </div>
+
+    <!-- Progress & Stream Box -->
+    <div id="hud-stream-container" class="agy-hud-stream" style="display: none;">
+      <div class="agy-hud-step-indicator" id="hud-step-label">
+        <span class="agy-hud-spinner"></span>
+        <span id="hud-step-text">Processing command...</span>
+      </div>
+      <div id="hud-stream-text" class="agy-hud-body"></div>
+    </div>
+
+    <!-- Footer Quick Actions & Keys -->
+    <div class="agy-hud-footer">
+      <div class="agy-hud-quick-actions">
+        <button class="agy-quick-chip" data-cmd="Summarize active page">📑 Summarize</button>
+        <button class="agy-quick-chip" data-cmd="Label all interactive buttons">🎯 Label Buttons</button>
+        <button class="agy-quick-chip" data-cmd="Capture screenshot">📸 Screenshot</button>
+      </div>
+      <div class="agy-hud-keys">
+        <span><kbd>Enter</kbd> Run</span>
+        <span><kbd>Esc</kbd> Close</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="floating.js"></script>
+</body>
+</html>

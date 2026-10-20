@@ -1,0 +1,44 @@
+{
+  "port": 3721,
+  "authToken": "agy_local_secret_token_default",
+  "activeProvider": "fallback",
+  "approvedDirectories": [
+    "D:\\Coding\\Projects\\Personal Projects\\Agent-Extension"
+  ],
+  "approvedApplications": [
+    "code",
+    "notepad",
+    "calc",
+    "cmd",
+    "powershell",
+    "wt",
+    "git"
+  ],
+  "security": {
+    "requireApprovalForShell": true,
+    "requireApprovalForFileWrite": false,
+    "requireApprovalForFileDelete": true,
+    "maxShellExecutionTimeoutMs": 45000,
+    "blockedShellPatterns": [
+      "format\\s+[a-zA-Z]:",
+      "rmdir\\s+/[sS]\\s+/[qQ]\\s+[cC]:\\\\",
+      ":\\(\\)\\s*\\{\\s*:\\|:&\\s*\\};:",
+      "dd\\s+if="
+    ]
+  },
+  "providers": {
+    "ollama": {
+      "baseUrl": "http://localhost:11434",
+      "model": "llama3.2"
+    },
+    "gemini": {
+      "model": "gemini-2.0-flash"
+    },
+    "anthropic": {
+      "model": "claude-3-5-sonnet-20241022"
+    },
+    "openai": {
+      "model": "gpt-4o"
+    }
+  }
+}

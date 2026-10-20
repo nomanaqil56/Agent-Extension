@@ -1,0 +1,15 @@
+{
+  "name": "browser-ai-agent-suite",
+  "version": "1.0.0",
+  "description": "Full-stack Browser Agent & Local Companion Engine: Brave/Chrome AI Extension + Local Engine with Browser Automation, Sandboxed Terminal, Safe Filesystem, Desktop Control, and Hybrid LLM Orchestrator",
+  "scripts": {
+    "setup": "node scripts/setup.js",
+    "start:engine": "npm --prefix local-engine start",
+    "dev:engine": "npm --prefix local-engine run dev",
+    "test:engine": "npm --prefix local-engine test",
+    "test:e2e": "npm --prefix local-engine run test:e2e",
+    "verify": "node scripts/verify.js"
+  },
+  "author": "Antigravity Engineering",
+  "license": "MIT"
+}

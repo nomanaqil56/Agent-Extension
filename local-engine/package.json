@@ -1,0 +1,29 @@
+{
+  "name": "antigravity-browser-local-engine",
+  "version": "1.0.0",
+  "description": "Local Agent Engine companion for the Brave/Chrome AI Browser Extension",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node tests/test-engine.js",
+    "test:e2e": "node tests/test-e2e.js"
+  },
+  "keywords": [
+    "browser-agent",
+    "antigravity",
+    "ai-agent",
+    "desktop-automation",
+    "chrome-extension",
+    "brave"
+  ],
+  "author": "Antigravity Engineering",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  }
+}

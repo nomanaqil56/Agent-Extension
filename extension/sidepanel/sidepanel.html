@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Antigravity Browser Agent</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body class="agy-theme-dark">
+  <div class="agy-container">
+    <!-- Top Header Bar -->
+    <header class="agy-header">
+      <div class="agy-brand">
+        <div class="agy-logo-orb">
+          <div class="agy-orb-inner"></div>
+        </div>
+        <div class="agy-title-group">
+          <h1 class="agy-title">ANTIGRAVITY</h1>
+          <span class="agy-version-badge">AGENT 2.0</span>
+        </div>
+      </div>
+
+      <div class="agy-status-group">
+        <!-- Engine Connection Pill -->
+        <button id="engine-status-pill" class="agy-status-pill disconnected" title="Click to reconnect to Local Agent Engine">
+          <span class="agy-status-dot"></span>
+          <span id="engine-status-text">OFFLINE</span>
+        </button>
+
+        <!-- Emergency Stop Button -->
+        <button id="emergency-stop-btn" class="agy-stop-btn" title="Emergency Stop: Halt all running actions immediately">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+            <rect x="5" y="5" width="14" height="14" rx="2"></rect>
+          </svg>
+          STOP
+        </button>
+      </div>
+    </header>
+
+    <!-- Context & Active Model Bar -->
+    <div class="agy-subbar">
+      <div class="agy-page-context" id="page-context-badge" title="Current Page Context">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"></circle>
+          <line x1="2" y1="12" x2="22" y2="12"></line>
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+        </svg>
+        <span id="page-title-text" class="agy-truncate">Active Tab</span>
+      </div>
+
+      <div class="agy-provider-selector">
+        <select id="model-select" class="agy-select">
+          <option value="gemini">Gemini 2.0 Flash</option>
+          <option value="claude">Claude 3.5 Sonnet</option>
+          <option value="openai">GPT-4o</option>
+          <option value="ollama">Ollama (Local LLM)</option>
+          <option value="fallback" selected>Autonomous Engine</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <nav class="agy-nav">
+      <button class="agy-tab active" data-tab="chat-view">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+        </svg>
+        Agent Chat
+      </button>
+
+      <button class="agy-tab" data-tab="approvals-view">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+        </svg>
+        Approvals <span id="approvals-count-badge" class="agy-counter-badge" style="display: none;">0</span>
+      </button>
+
+      <button class="agy-tab" data-tab="audit-view">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+        </svg>
+        Audit Log
+      </button>
+
+      <button class="agy-tab" data-tab="settings-view">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      </button>
+    </nav>
+
+    <!-- Main Content Views -->
+    <main class="agy-main">
+
+      <!-- 1. CHAT VIEW -->
+      <section id="chat-view" class="agy-view active">
+        <!-- Message Feed -->
+        <div id="chat-messages" class="agy-message-list">
+          <div class="agy-welcome-card">
+            <div class="agy-welcome-icon">⚡</div>
+            <h3>Antigravity Command Center</h3>
+            <p>Your browser and desktop agent. Control tabs, navigate web pages, read local code, execute terminal commands, and automate workflows.</p>
+            <div class="agy-suggestion-pills">
+              <button class="agy-pill" data-prompt="Analyze this webpage and summarize its key points">📑 Summarize Page</button>
+              <button class="agy-pill" data-prompt="Distill interactive elements and highlight buttons">🎯 Label Buttons</button>
+              <button class="agy-pill" data-prompt="Inspect local project files and run tests in terminal">💻 Check Project Files</button>
+              <button class="agy-pill" data-prompt="Take a screenshot of the current page">📸 Screenshot</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live Agent Execution Indicator -->
+        <div id="agent-active-status" class="agy-agent-status" style="display: none;">
+          <div class="agy-spinner"></div>
+          <span id="agent-status-label">Planning next step...</span>
+        </div>
+
+        <!-- Input Area -->
+        <div class="agy-input-container">
+          <!-- Context attachment chips -->
+          <div class="agy-context-chips">
+            <label class="agy-chip active" id="chip-include-page">
+              <input type="checkbox" id="check-include-page" checked>
+              <span>🌐 Current Page</span>
+            </label>
+            <label class="agy-chip active" id="chip-include-dom">
+              <input type="checkbox" id="check-include-dom" checked>
+              <span>📑 DOM Elements</span>
+            </label>
+            <button class="agy-chip-btn" id="btn-snap-screenshot" title="Attach screenshot of page">
+              📸 Capture Tab
+            </button>
+          </div>
+
+          <div class="agy-input-row">
+            <textarea id="user-input" class="agy-textarea" rows="2" placeholder="Instruct your agent (e.g. 'Click the submit button and check logs')..."></textarea>
+            
+            <div class="agy-input-actions">
+              <!-- Voice Dictation Button -->
+              <button id="voice-btn" class="agy-icon-btn voice" title="Voice Command (Click & Speak)">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                  <line x1="12" y1="19" x2="12" y2="23"></line>
+                  <line x1="8" y1="23" x2="16" y2="23"></line>
+                </svg>
+              </button>
+
+              <!-- Send Button -->
+              <button id="send-btn" class="agy-send-btn" title="Send Instruction (Enter)">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="22" y1="2" x2="11" y2="13"></line>
+                  <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="agy-input-footer">
+            <span class="agy-shortcut-hint"><kbd>Alt+Space</kbd> Floating HUD · <kbd>Enter</kbd> Send</span>
+            <span id="voice-state-hint" class="agy-voice-hint" style="display:none;">Listening...</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. APPROVALS VIEW -->
+      <section id="approvals-view" class="agy-view">
+        <div class="agy-view-header">
+          <h2>Action Approvals & Security</h2>
+          <p>Sensitive actions require your explicit authorization before execution.</p>
+        </div>
+
+        <div id="approvals-list" class="agy-approvals-feed">
+          <div class="agy-empty-state">
+            <div class="agy-shield-icon">🛡️</div>
+            <h4>No Pending Approvals</h4>
+            <p>When the agent attempts sensitive file edits or terminal commands, you'll review and approve them here.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. AUDIT LOG VIEW -->
+      <section id="audit-view" class="agy-view">
+        <div class="agy-view-header">
+          <div class="agy-flex-between">
+            <div>
+              <h2>Audit Log</h2>
+              <p>Chronological trace of all actions executed by the agent.</p>
+            </div>
+            <button id="clear-audit-btn" class="agy-small-btn">Clear</button>
+          </div>
+        </div>
+
+        <div id="audit-list" class="agy-audit-feed">
+          <div class="agy-empty-state">
+            <div class="agy-shield-icon">📜</div>
+            <h4>Audit Log is Empty</h4>
+            <p>Every browser automation, terminal execution, and file access event is recorded here.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 4. SETTINGS VIEW -->
+      <section id="settings-view" class="agy-view">
+        <div class="agy-view-header">
+          <h2>Configuration & Permissions</h2>
+          <p>Configure model API keys, local companion engine, and file access scopes.</p>
+        </div>
+
+        <div class="agy-settings-form">
+          <div class="agy-form-group">
+            <label>Local Agent Engine WebSocket URL</label>
+            <input type="text" id="setting-engine-url" class="agy-input" value="ws://localhost:3721">
+          </div>
+
+          <div class="agy-form-group">
+            <label>Security Authentication Token</label>
+            <input type="password" id="setting-auth-token" class="agy-input" value="agy_local_secret_token_default">
+          </div>
+
+          <div class="agy-form-group">
+            <label>Default AI Provider</label>
+            <select id="setting-provider" class="agy-select full-width">
+              <option value="fallback">Autonomous Engine (Zero-Config Built-in)</option>
+              <option value="gemini">Google Gemini 2.0</option>
+              <option value="claude">Anthropic Claude 3.5 Sonnet</option>
+              <option value="openai">OpenAI GPT-4o</option>
+              <option value="ollama">Local Ollama / LM Studio (localhost:11434)</option>
+            </select>
+          </div>
+
+          <div class="agy-form-group">
+            <label>Google Gemini API Key</label>
+            <input type="password" id="setting-gemini-key" class="agy-input" placeholder="AIzaSy...">
+          </div>
+
+          <div class="agy-form-group">
+            <label>Anthropic API Key</label>
+            <input type="password" id="setting-anthropic-key" class="agy-input" placeholder="sk-ant-...">
+          </div>
+
+          <div class="agy-form-group">
+            <label>OpenAI API Key</label>
+            <input type="password" id="setting-openai-key" class="agy-input" placeholder="sk-proj-...">
+          </div>
+
+          <div class="agy-form-group">
+            <label>Ollama / Local LLM Base URL</label>
+            <input type="text" id="setting-ollama-url" class="agy-input" value="http://localhost:11434">
+          </div>
+
+          <div class="agy-form-group">
+            <label class="agy-checkbox-label">
+              <input type="checkbox" id="setting-audio-feedback" checked>
+              <span>Enable voice audio feedback (Speech Synthesis)</span>
+            </label>
+          </div>
+
+          <button id="save-settings-btn" class="agy-primary-btn">Save Settings</button>
+          <div id="settings-saved-hint" class="agy-success-hint" style="display: none;">Settings saved successfully!</div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>
