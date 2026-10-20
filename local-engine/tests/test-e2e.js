@@ -90,6 +90,18 @@ async function runE2ETest() {
     assert.strictEqual(validPair.body.token, TEST_TOKEN, 'Pairing must return authentic session token');
     console.log('  ✓ Valid pairing code retrieves security token');
 
+    // 1c. Replay rejection: Re-submitting consumed pairing code must return 409
+    const replayPair = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/pair',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    }, { pairingCode: TEST_PAIRING });
+
+    assert.strictEqual(replayPair.statusCode, 409, 'Replay of consumed pairing code must be rejected with 409');
+    console.log('  ✓ Reused pairing code rejected with 409 (Single-use consumption enforced)');
+
     // --- TEST 2: Settings Synchronization (POST /config and GET /config) ---
     console.log('\n[Test 2] Testing Authenticated Settings Synchronization...');
 
@@ -136,6 +148,54 @@ async function runE2ETest() {
     assert.ok(getConfig.body.geminiApiKey.includes('••••'), 'Secret key must be masked in GET /config');
     assert.strictEqual(getConfig.body.hybridRoutingPolicy, 'privacy-first');
     console.log('  ✓ GET /config returns masked secrets and applied settings');
+
+    // 2d. Explicit credential deletion
+    const deleteCredConfig = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/config',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${TEST_TOKEN}`
+      }
+    }, {
+      geminiApiKey: ''
+    });
+    assert.strictEqual(deleteCredConfig.statusCode, 200);
+    assert.strictEqual(deleteCredConfig.body.hasGeminiKey, false, 'Passing empty string must delete credential');
+    console.log('  ✓ Explicit credential deletion works');
+
+    // 2e. Re-add credential and verify masked placeholder does NOT overwrite
+    await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/config',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${TEST_TOKEN}`
+      }
+    }, {
+      geminiApiKey: 'AIzaSyNewKey98765'
+    });
+
+    // Send update with masked string
+    const preserveConfig = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/config',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${TEST_TOKEN}`
+      }
+    }, {
+      geminiApiKey: 'AIz••••765',
+      hybridRoutingPolicy: 'balanced'
+    });
+    assert.strictEqual(preserveConfig.body.hasGeminiKey, true, 'Masked placeholder must not delete or overwrite secret');
+    console.log('  ✓ Masked placeholder does not overwrite real secret');
 
     // --- TEST 3: WebSocket Authentication Failure (Clean Code 4003) ---
     console.log('\n[Test 3] Testing WebSocket Handshake Authentication Failure...');
@@ -211,20 +271,25 @@ async function runE2ETest() {
               version: '1.0.0'
             }));
 
-            // Dispatch simulated user task
+            // Dispatch simulated user task with unique conversationId
             wsGood.send(JSON.stringify({
               type: 'USER_TASK',
+              conversationId: 'conv_e2e_session_999',
               task: 'Query system memory and diagnostic telemetry',
               provider: 'fallback'
             }));
           }
         } else if (msg.type === 'AGENT_THOUGHT') {
-          console.log(`  ✓ Agent Thought: "${msg.thought.slice(0, 45)}..."`);
+          assert.strictEqual(msg.conversationId, 'conv_e2e_session_999', 'AGENT_THOUGHT must carry initiating conversationId');
+          console.log(`  ✓ Agent Thought: "${msg.thought.slice(0, 45)}..." (Conv: ${msg.conversationId})`);
         } else if (msg.type === 'TOOL_START') {
+          assert.strictEqual(msg.conversationId, 'conv_e2e_session_999', 'TOOL_START must carry initiating conversationId');
           console.log(`  ✓ Tool Start: ${msg.tool}`);
         } else if (msg.type === 'TOOL_FINISH') {
+          assert.strictEqual(msg.conversationId, 'conv_e2e_session_999', 'TOOL_FINISH must carry initiating conversationId');
           console.log(`  ✓ Tool Finish: ${msg.tool}`);
         } else if (msg.type === 'TASK_COMPLETE') {
+          assert.strictEqual(msg.conversationId, 'conv_e2e_session_999', 'TASK_COMPLETE must carry initiating conversationId');
           console.log('  ✓ Task Complete received');
           clearTimeout(timeout);
           wsGood.close();

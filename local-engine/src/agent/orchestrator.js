@@ -15,13 +15,16 @@ class AgentOrchestrator {
   }
 
   // Execute full agent task pipeline
-  async runTask({ task, providerName = 'hybrid', context = {}, clientWs = null, abortSignal = null }) {
-    console.log(`\n[Agent Orchestrator] Starting task: "${task}" (Requested: ${providerName})`);
+  async runTask({ task, conversationId = null, providerName = 'hybrid', context = {}, clientWs = null, abortSignal = null }) {
+    console.log(`\n[Agent Orchestrator] Starting task: "${task}" (Requested: ${providerName}, Conv: ${conversationId || 'none'})`);
 
     const notify = (msg) => {
       if (clientWs && clientWs.readyState === 1) { // 1 = OPEN
         try {
-          clientWs.send(JSON.stringify(msg));
+          clientWs.send(JSON.stringify({
+            conversationId,
+            ...msg
+          }));
         } catch (e) {
           console.warn('[Orchestrator] Notification failed:', e.message);
         }

@@ -144,6 +144,18 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function saveConversations() {
+    // Retention limits: cap total stored sessions to prevent unbounded storage growth
+    const convKeys = Object.keys(conversations);
+    if (convKeys.length > 30) {
+      const sorted = Object.values(conversations).sort((a, b) => new Date(a.updatedAt) - new Date(b.updatedAt));
+      const toDelete = sorted.slice(0, convKeys.length - 30);
+      toDelete.forEach(c => {
+        if (c.id !== activeConversationId) {
+          delete conversations[c.id];
+        }
+      });
+    }
+
     chrome.storage.local.set({
       conversations,
       activeConversationId
@@ -193,18 +205,27 @@ document.addEventListener('DOMContentLoaded', () => {
     scrollChat();
   }
 
-  function recordMessage(item) {
-    if (!activeConversationId || !conversations[activeConversationId]) return;
-    const conv = conversations[activeConversationId];
+  function recordMessage(item, targetConvId = null) {
+    const convId = targetConvId || activeConversationId;
+    if (!convId || !conversations[convId]) return;
+    const conv = conversations[convId];
+    if (!Array.isArray(conv.messages)) conv.messages = [];
+
     conv.messages.push({
       id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       timestamp: new Date().toISOString(),
       ...item
     });
+
+    // Bound messages per conversation to 120
+    if (conv.messages.length > 120) {
+      conv.messages = conv.messages.slice(-120);
+    }
+
     conv.updatedAt = new Date().toISOString();
 
     // Auto title on first user message
-    if (item.type === 'user' && conv.title === 'Initial Session' || conv.title.startsWith('New Task')) {
+    if (item.type === 'user' && (conv.title === 'Initial Session' || conv.title.startsWith('Task #') || conv.title.startsWith('New Task'))) {
       conv.title = item.content.slice(0, 28) + (item.content.length > 28 ? '...' : '');
       updateConversationDropdown();
     }
@@ -333,13 +354,18 @@ document.addEventListener('DOMContentLoaded', () => {
         btnSnapScreenshot.classList.remove('active');
       }
 
+      // Capture the initiating conversation ID so late-arriving responses or background execution
+      // stay strictly associated with this conversation even if the user switches views
+      const taskConversationId = activeConversationId;
+
       // Check if Local Engine is connected
       if (isConnected) {
-        // Send full task to Local Engine
+        // Send full task to Local Engine with initiating conversationId
         chrome.runtime.sendMessage({
           action: 'SEND_ENGINE_MESSAGE',
           payload: {
             type: 'USER_TASK',
+            conversationId: taskConversationId,
             task: promptText,
             provider: modelSelect.value,
             context
@@ -347,7 +373,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
       } else {
         // Run fallback autonomous action directly in extension
-        runDirectFallbackAgent(promptText, context);
+        runDirectFallbackAgent(promptText, context, taskConversationId);
       }
     } catch (err) {
       appendAgentMessage(`⚠️ Error executing prompt: ${err.message}`);
@@ -359,6 +385,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // --- 4. Message Stream Handling from Engine ---
 
   chrome.runtime.onMessage.addListener((msg) => {
+    const targetConvId = msg.conversationId || activeConversationId;
+
     switch (msg.type) {
       case 'ENGINE_STATUS':
         updateEngineStatus(msg.connected, msg.port, msg.authFailed, msg.error);
@@ -368,37 +396,41 @@ document.addEventListener('DOMContentLoaded', () => {
         if (msg.provider) {
           const isFback = msg.isFallback ? ' (Autonomous Fallback)' : '';
           const policy = msg.policy ? ` [${msg.policy.toUpperCase()}]` : '';
-          appendSystemNotice(`Active Provider: ${msg.provider.toUpperCase()}${policy}${isFback}`);
+          appendSystemNotice(`Active Provider: ${msg.provider.toUpperCase()}${policy}${isFback}`, targetConvId);
         }
         break;
 
       case 'PROVIDER_SWITCH':
-        appendSystemNotice(`⚠️ Provider switched to ${msg.provider}: ${msg.reason || ''}`);
+        appendSystemNotice(`⚠️ Provider switched to ${msg.provider}: ${msg.reason || ''}`, targetConvId);
         break;
 
       case 'AGENT_THOUGHT':
-        renderAgentThought(msg.thought);
+        renderAgentThought(msg.thought, targetConvId);
         break;
 
       case 'STREAM_CHUNK':
-        streamAgentChunk(msg.chunk);
+        streamAgentChunk(msg.chunk, targetConvId);
         break;
 
       case 'AGENT_MESSAGE':
-        appendAgentMessage(msg.message);
-        hideAgentStatus();
-        isProcessing = false;
+        appendAgentMessage(msg.message, targetConvId);
+        if (targetConvId === activeConversationId) {
+          hideAgentStatus();
+          isProcessing = false;
+        }
         speakTextIfEnabled(msg.message);
         break;
 
       case 'TOOL_START':
-        showAgentStatus(`Executing: ${msg.tool}...`);
-        renderToolStep(msg.tool, msg.params);
+        if (targetConvId === activeConversationId) {
+          showAgentStatus(`Executing: ${msg.tool}...`);
+        }
+        renderToolStep(msg.tool, msg.params, targetConvId);
         addAuditEntry(msg.tool, 'started', msg.params);
         break;
 
       case 'TOOL_FINISH':
-        renderToolResult(msg.tool, msg.result, msg.error);
+        renderToolResult(msg.tool, msg.result, msg.error, targetConvId);
         addAuditEntry(msg.tool, msg.error ? 'failed' : 'completed', msg.result || msg.error);
         break;
 
@@ -407,10 +439,12 @@ document.addEventListener('DOMContentLoaded', () => {
         break;
 
       case 'TASK_COMPLETE':
-        hideAgentStatus();
-        isProcessing = false;
+        if (targetConvId === activeConversationId) {
+          hideAgentStatus();
+          isProcessing = false;
+        }
         if (msg.summary) {
-          appendAgentMessage(msg.summary);
+          appendAgentMessage(msg.summary, targetConvId);
           speakTextIfEnabled(msg.summary);
         }
         break;
@@ -651,9 +685,11 @@ document.addEventListener('DOMContentLoaded', () => {
     scrollChat();
   }
 
-  function appendAgentMessage(text) {
-    appendAgentMessageDom(text);
-    recordMessage({ type: 'agent', content: text });
+  function appendAgentMessage(text, targetConvId = null) {
+    recordMessage({ type: 'agent', content: text }, targetConvId);
+    if ((targetConvId || activeConversationId) === activeConversationId) {
+      appendAgentMessageDom(text);
+    }
   }
 
   function appendAgentMessageDom(text) {
@@ -665,7 +701,8 @@ document.addEventListener('DOMContentLoaded', () => {
     scrollChat();
   }
 
-  function streamAgentChunk(chunk) {
+  function streamAgentChunk(chunk, targetConvId = null) {
+    if ((targetConvId || activeConversationId) !== activeConversationId) return;
     if (!currentStreamingBubble) {
       const msg = document.createElement('div');
       msg.className = 'agy-msg agent';
@@ -679,9 +716,11 @@ document.addEventListener('DOMContentLoaded', () => {
     scrollChat();
   }
 
-  function renderAgentThought(thought) {
-    renderAgentThoughtDom(thought);
-    recordMessage({ type: 'thought', content: thought });
+  function renderAgentThought(thought, targetConvId = null) {
+    recordMessage({ type: 'thought', content: thought }, targetConvId);
+    if ((targetConvId || activeConversationId) === activeConversationId) {
+      renderAgentThoughtDom(thought);
+    }
   }
 
   function renderAgentThoughtDom(thought) {
@@ -698,9 +737,11 @@ document.addEventListener('DOMContentLoaded', () => {
     scrollChat();
   }
 
-  function renderToolStep(tool, params) {
-    renderToolStepDom(tool, params);
-    recordMessage({ type: 'tool_step', tool, params });
+  function renderToolStep(tool, params, targetConvId = null) {
+    recordMessage({ type: 'tool_step', tool, params }, targetConvId);
+    if ((targetConvId || activeConversationId) === activeConversationId) {
+      renderToolStepDom(tool, params);
+    }
   }
 
   function renderToolStepDom(tool, params) {
@@ -718,9 +759,11 @@ document.addEventListener('DOMContentLoaded', () => {
     scrollChat();
   }
 
-  function renderToolResult(tool, result, error) {
-    renderToolResultDom(tool, result, error);
-    recordMessage({ type: 'tool_result', tool, result, error });
+  function renderToolResult(tool, result, error, targetConvId = null) {
+    recordMessage({ type: 'tool_result', tool, result, error }, targetConvId);
+    if ((targetConvId || activeConversationId) === activeConversationId) {
+      renderToolResultDom(tool, result, error);
+    }
   }
 
   function renderToolResultDom(tool, result, error) {
@@ -738,8 +781,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function appendSystemNotice(notice) {
-    appendSystemNoticeDom(notice);
+  function appendSystemNotice(notice, targetConvId = null) {
+    recordMessage({ type: 'system', content: notice }, targetConvId);
+    if ((targetConvId || activeConversationId) === activeConversationId) {
+      appendSystemNoticeDom(notice);
+    }
   }
 
   function appendSystemNoticeDom(notice) {

@@ -51,14 +51,33 @@ if (!fs.existsSync(envFile)) {
   }
 }
 
-// Update config.json if it has the default insecure token
+// Ensure secrets are stored in untracked local-engine/.secrets.json
+const secretsJsonPath = path.join(engineDir, '.secrets.json');
+try {
+  let secrets = {};
+  if (fs.existsSync(secretsJsonPath)) {
+    try { secrets = JSON.parse(fs.readFileSync(secretsJsonPath, 'utf8')); } catch (e) {}
+  }
+  if (!secrets.authToken) {
+    secrets.authToken = generatedToken;
+    fs.writeFileSync(secretsJsonPath, JSON.stringify(secrets, null, 2), 'utf8');
+    console.log('   ✓ Saved security token to untracked local-engine/.secrets.json.');
+  }
+} catch (e) {
+  console.warn('   ! .secrets.json note:', e.message);
+}
+
+// Remove secrets from tracked config.json if present
 try {
   if (fs.existsSync(configJsonPath)) {
     const rawConfig = JSON.parse(fs.readFileSync(configJsonPath, 'utf8'));
-    if (rawConfig.authToken === 'agy_local_secret_token_default') {
-      rawConfig.authToken = generatedToken;
+    if (rawConfig.authToken || rawConfig.geminiApiKey || rawConfig.anthropicApiKey || rawConfig.openaiApiKey) {
+      delete rawConfig.authToken;
+      delete rawConfig.geminiApiKey;
+      delete rawConfig.anthropicApiKey;
+      delete rawConfig.openaiApiKey;
       fs.writeFileSync(configJsonPath, JSON.stringify(rawConfig, null, 2), 'utf8');
-      console.log('   ✓ Updated local-engine/config.json with generated token.');
+      console.log('   ✓ Removed credentials from tracked local-engine/config.json.');
     }
   }
 } catch (e) {

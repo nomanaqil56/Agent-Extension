@@ -1,12 +1,11 @@
-// Antigravity Local Agent Engine - Permission & Access Control Manager
-
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 
 class PermissionManager {
   constructor(config = {}) {
     this.config = config;
-    this.approvedDirectories = (Array.isArray(config.approvedDirectories) ? config.approvedDirectories : [process.cwd()]).map(d => path.resolve(d));
+    this.approvedDirectories = (Array.isArray(config.approvedDirectories) ? config.approvedDirectories : []).map(d => path.resolve(d));
     this.approvedApplications = new Set(
       (config.approvedApplications || ['code', 'notepad', 'calc', 'git']).map(a => a.toLowerCase())
     );
@@ -186,9 +185,10 @@ class PermissionManager {
         if (!this.isPathApproved(dirPath)) {
           return {
             allowed: false,
-            needsApproval: true,
-            riskLevel: 'high',
-            reason: `Directory "${dirPath}" is outside approved workspace directories.`
+            needsApproval: false,
+            blocked: true,
+            riskLevel: 'forbidden',
+            reason: `Directory "${dirPath}" is outside approved workspace directories. Action strictly forbidden.`
           };
         }
         return { allowed: true, needsApproval: false, riskLevel: 'low' };
@@ -203,9 +203,10 @@ class PermissionManager {
         if (!this.isPathApproved(filePath)) {
           return {
             allowed: false,
-            needsApproval: true,
-            riskLevel: 'high',
-            reason: `Path "${filePath}" is outside approved workspace directories.`
+            needsApproval: false,
+            blocked: true,
+            riskLevel: 'forbidden',
+            reason: `Target path "${filePath}" is outside approved workspace directories. Action strictly forbidden.`
           };
         }
         // Protect secret credentials and private key files
@@ -230,9 +231,10 @@ class PermissionManager {
         if (!this.isPathApproved(filePath)) {
           return {
             allowed: false,
-            needsApproval: true,
-            riskLevel: 'high',
-            reason: `Attempting to write file outside approved directories: "${filePath}"`
+            needsApproval: false,
+            blocked: true,
+            riskLevel: 'forbidden',
+            reason: `Attempting to write file outside approved directories: "${filePath}". Action strictly forbidden.`
           };
         }
         // Default requireApprovalForFileWrite is true per Phase 10.5
@@ -259,9 +261,10 @@ class PermissionManager {
         if (!this.isPathApproved(filePath)) {
           return {
             allowed: false,
-            needsApproval: true,
-            riskLevel: 'high',
-            reason: `Attempting to delete file outside approved directories: "${filePath}"`
+            needsApproval: false,
+            blocked: true,
+            riskLevel: 'forbidden',
+            reason: `Attempting to delete file outside approved directories: "${filePath}". Action strictly forbidden.`
           };
         }
         if (this.config.security?.requireApprovalForFileDelete !== false) {

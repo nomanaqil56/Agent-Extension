@@ -1,16 +1,13 @@
 {
   "port": 3721,
   "host": "127.0.0.1",
-  "authToken": "",
   "activeProvider": "hybrid",
   "hybridRoutingPolicy": "balanced",
   "ollamaUrl": "http://localhost:11434",
   "ollamaModel": "llama3",
   "preferLocalOllama": false,
   "allowFallbackOnMissingCredentials": false,
-  "approvedDirectories": [
-    "."
-  ],
+  "approvedDirectories": [],
   "approvedApplications": [
     "code",
     "notepad",

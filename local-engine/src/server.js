@@ -20,13 +20,20 @@ const OllamaProvider = require('./agent/providers/ollama');
 
 const crypto = require('crypto');
 
-// Load configuration
+// Configuration paths: public config.json vs untracked local .secrets.json
 const configPath = process.env.ENGINE_CONFIG_PATH || path.join(__dirname, '..', 'config.json');
+const secretsPath = process.env.ENGINE_SECRETS_PATH || path.join(__dirname, '..', '.secrets.json');
+
 let config = {
   port: 3721,
   host: '127.0.0.1',
-  authToken: '',
-  approvedDirectories: [process.cwd()],
+  activeProvider: 'hybrid',
+  hybridRoutingPolicy: 'balanced',
+  ollamaUrl: 'http://localhost:11434',
+  ollamaModel: 'llama3',
+  preferLocalOllama: false,
+  allowFallbackOnMissingCredentials: false,
+  approvedDirectories: [],
   approvedApplications: ['code', 'notepad', 'calc', 'git'],
   security: {
     requireApprovalForShell: true,
@@ -43,6 +50,14 @@ let config = {
   }
 };
 
+let secrets = {
+  authToken: '',
+  geminiApiKey: '',
+  anthropicApiKey: '',
+  openaiApiKey: ''
+};
+
+// Load public configuration
 try {
   if (fs.existsSync(configPath)) {
     const raw = fs.readFileSync(configPath, 'utf8');
@@ -50,6 +65,48 @@ try {
   }
 } catch (e) {
   console.warn('[Server] Using default configuration');
+}
+
+// Load private secrets
+try {
+  if (fs.existsSync(secretsPath)) {
+    const rawSecrets = fs.readFileSync(secretsPath, 'utf8');
+    secrets = { ...secrets, ...JSON.parse(rawSecrets) };
+  }
+} catch (e) {
+  console.warn('[Server] No .secrets.json loaded; will initialize on first secret creation');
+}
+
+// Secret Migration: strip secrets out of tracked config.json into untracked .secrets.json
+let configNeedsCleaning = false;
+['authToken', 'geminiApiKey', 'anthropicApiKey', 'openaiApiKey', 'geminiKey', 'anthropicKey', 'openAiKey', 'openaiKey'].forEach(k => {
+  if (config[k]) {
+    const canonicalKey = k.toLowerCase().includes('gemini') ? 'geminiApiKey' :
+      k.toLowerCase().includes('anthropic') ? 'anthropicApiKey' :
+      k.toLowerCase().includes('openai') ? 'openaiApiKey' :
+      k === 'authToken' ? 'authToken' : k;
+    if (!secrets[canonicalKey]) {
+      secrets[canonicalKey] = config[k];
+    }
+    delete config[k];
+    configNeedsCleaning = true;
+  }
+});
+
+// Helper: Safely persist .secrets.json
+function persistSecretsFile() {
+  try {
+    fs.writeFileSync(secretsPath, JSON.stringify(secrets, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('[Server] Could not persist .secrets.json:', err.message);
+  }
+}
+
+if (configNeedsCleaning) {
+  persistSecretsFile();
+  try {
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+  } catch (e) {}
 }
 
 const PORT = parseInt(process.env.ENGINE_PORT || config.port, 10) || 3721;
@@ -60,17 +117,30 @@ if (HOST !== '127.0.0.1' && HOST !== 'localhost') {
   console.warn(`\n⚠️  [SECURITY WARNING] Local Engine is bound to non-loopback host "${HOST}". Ensure network isolation.`);
 }
 
-// Token setup: use configured token, or generate secure random token if empty
-let AUTH_TOKEN = (process.env.ENGINE_AUTH_TOKEN || config.authToken || '').trim();
+// Token setup: precedence = process.env -> secrets.authToken -> generate secure random token
+let AUTH_TOKEN = (process.env.ENGINE_AUTH_TOKEN || secrets.authToken || '').trim();
 if (!AUTH_TOKEN) {
   AUTH_TOKEN = crypto.randomBytes(32).toString('hex');
-  console.log(`[Server] Generated secure ephemeral token for session: ${AUTH_TOKEN.slice(0, 8)}...`);
+  secrets.authToken = AUTH_TOKEN;
+  persistSecretsFile();
+  console.log(`[Server] Generated secure persistent token in .secrets.json: ${AUTH_TOKEN.slice(0, 8)}...`);
 }
 
-// Ephemeral pairing code for first-run pairing and credential recovery (loopback-only)
-const PAIRING_CODE = (process.env.ENGINE_PAIRING_CODE || crypto.randomBytes(3).toString('hex')).toUpperCase();
+// Ephemeral pairing state with entropy, 5-minute expiry, lockout, and single-use consumption
+const PAIRING_EXPIRY_MS = 5 * 60 * 1000;
+const MAX_PAIRING_ATTEMPTS = 5;
 
-// Helper: Safely mask secret credentials
+const pairingState = {
+  code: (process.env.ENGINE_PAIRING_CODE || crypto.randomBytes(4).toString('hex')).toUpperCase(),
+  createdAt: Date.now(),
+  expiresAt: Date.now() + PAIRING_EXPIRY_MS,
+  failedAttempts: 0,
+  consumed: false
+};
+
+const PAIRING_CODE = pairingState.code;
+
+// Helper: Safely mask secret credentials for UI display
 function maskSecret(str) {
   if (!str || typeof str !== 'string') return '';
   const trimmed = str.trim();
@@ -78,13 +148,12 @@ function maskSecret(str) {
   return trimmed.slice(0, 3) + '••••••••' + trimmed.slice(-4);
 }
 
-// Helper: Safely persist config.json
+// Helper: Safely persist config.json (Strictly non-secret configuration only)
 function persistConfigFile() {
   try {
     const toSave = {
       port: PORT,
       host: HOST,
-      authToken: AUTH_TOKEN,
       activeProvider: config.activeProvider || 'hybrid',
       hybridRoutingPolicy: config.hybridRoutingPolicy || 'balanced',
       ollamaUrl: config.ollamaUrl || 'http://localhost:11434',
@@ -107,10 +176,6 @@ function persistConfigFile() {
         ]
       }
     };
-    if (config.geminiApiKey) toSave.geminiApiKey = config.geminiApiKey;
-    if (config.anthropicApiKey) toSave.anthropicApiKey = config.anthropicApiKey;
-    if (config.openaiApiKey) toSave.openaiApiKey = config.openaiApiKey;
-
     fs.writeFileSync(configPath, JSON.stringify(toSave, null, 2), 'utf8');
   } catch (err) {
     console.warn('[Server] Could not persist config.json:', err.message);
@@ -126,7 +191,7 @@ const memoryManager = new MemoryManager();
 // Server context for browser bridge
 let extensionClient = null;
 const serverContext = {
-  getExtensionClient: () => extensionClient
+  getExtensionClient: () => (extensionClient && extensionClient.readyState === 1 && extensionClient.__authenticated ? extensionClient : null)
 };
 
 const toolRegistry = new ToolRegistry(
@@ -136,7 +201,7 @@ const toolRegistry = new ToolRegistry(
   serverContext
 );
 
-const orchestrator = new AgentOrchestrator(toolRegistry, memoryManager, config);
+const orchestrator = new AgentOrchestrator(toolRegistry, memoryManager, { ...config, ...secrets });
 
 // Initialize Express App
 const app = express();
@@ -164,19 +229,19 @@ app.use(cors({
 
 app.use(express.json({ limit: '2mb' }));
 
-// Token Authentication Middleware for HTTP
+// Token Authentication Middleware for HTTP (Authorization: Bearer <token> or X-Auth-Token)
 function authenticateHttp(req, res, next) {
   const authHeader = req.headers.authorization;
-  const queryToken = req.query.token;
-  const token = authHeader ? authHeader.replace(/^Bearer\s+/i, '') : queryToken;
+  const customHeader = req.headers['x-auth-token'];
+  const token = authHeader ? authHeader.replace(/^Bearer\s+/i, '').trim() : (customHeader ? customHeader.trim() : null);
 
   if (token && token === AUTH_TOKEN) {
     return next();
   }
-  return res.status(401).json({ error: 'Unauthorized: Invalid Antigravity security token' });
+  return res.status(401).json({ error: 'Unauthorized: Invalid or missing Antigravity security token' });
 }
 
-// Loopback-only Pairing Endpoint for First-Run and Credential Recovery
+// Loopback-only Pairing Endpoint with Expiry, Rate-Limiting, and One-Time Consumption
 app.post('/pair', (req, res) => {
   const remoteIp = req.socket.remoteAddress || '';
   const isLoopback = remoteIp === '127.0.0.1' ||
@@ -189,17 +254,57 @@ app.post('/pair', (req, res) => {
     return res.status(403).json({ error: 'Pairing is only allowed from local loopback.' });
   }
 
-  const { pairingCode } = req.body || {};
-  if (!pairingCode || pairingCode.trim().toUpperCase() !== PAIRING_CODE) {
+  // Check rate limiting / lockout
+  if (pairingState.failedAttempts >= MAX_PAIRING_ATTEMPTS) {
     auditLogger.log({
-      action: 'PAIRING_FAILED',
+      action: 'PAIRING_LOCKED',
+      status: 'BLOCKED',
+      riskLevel: 'high',
+      params: { ip: remoteIp, failedAttempts: pairingState.failedAttempts }
+    });
+    return res.status(429).json({ error: 'Too many failed pairing attempts. Pairing locked for security. Restart engine to reset.' });
+  }
+
+  // Check expiration (5-minute TTL)
+  if (Date.now() > pairingState.expiresAt) {
+    auditLogger.log({
+      action: 'PAIRING_EXPIRED',
       status: 'DENIED',
       riskLevel: 'medium',
       params: { ip: remoteIp }
     });
-    return res.status(401).json({ error: 'Invalid pairing code' });
+    return res.status(410).json({ error: 'Pairing code has expired. Restart engine to generate a fresh pairing code.' });
   }
 
+  // Check one-time consumption (Replay prevention)
+  if (pairingState.consumed) {
+    auditLogger.log({
+      action: 'PAIRING_REPLAY_REJECTED',
+      status: 'DENIED',
+      riskLevel: 'high',
+      params: { ip: remoteIp }
+    });
+    return res.status(409).json({ error: 'Pairing code has already been consumed. One-time pairing codes cannot be reused.' });
+  }
+
+  const { pairingCode } = req.body || {};
+  if (!pairingCode || pairingCode.trim().toUpperCase() !== pairingState.code) {
+    pairingState.failedAttempts++;
+    const remaining = Math.max(0, MAX_PAIRING_ATTEMPTS - pairingState.failedAttempts);
+    auditLogger.log({
+      action: 'PAIRING_FAILED',
+      status: 'DENIED',
+      riskLevel: 'medium',
+      params: { ip: remoteIp, remainingAttempts: remaining }
+    });
+    return res.status(401).json({
+      error: 'Invalid pairing code',
+      remainingAttempts: remaining
+    });
+  }
+
+  // Consume code immediately upon success
+  pairingState.consumed = true;
   auditLogger.log({
     action: 'PAIRING_SUCCESSFUL',
     status: 'APPROVED',
@@ -239,11 +344,11 @@ app.get('/engine-info', authenticateHttp, (req, res) => {
   });
 });
 
-// Configuration retrieval (Secrets safely masked)
+// Configuration retrieval (Secrets safely masked from .secrets.json)
 app.get('/config', authenticateHttp, (req, res) => {
-  const geminiKey = config.geminiApiKey || process.env.GEMINI_API_KEY || '';
-  const anthropicKey = config.anthropicApiKey || process.env.ANTHROPIC_API_KEY || '';
-  const openaiKey = config.openaiApiKey || process.env.OPENAI_API_KEY || '';
+  const geminiKey = secrets.geminiApiKey || process.env.GEMINI_API_KEY || '';
+  const anthropicKey = secrets.anthropicApiKey || process.env.ANTHROPIC_API_KEY || '';
+  const openaiKey = secrets.openaiApiKey || process.env.OPENAI_API_KEY || '';
   const ollamaUrl = config.ollamaUrl || process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
   const ollamaModel = config.ollamaModel || process.env.OLLAMA_MODEL || 'llama3';
 
@@ -267,21 +372,27 @@ app.get('/config', authenticateHttp, (req, res) => {
   });
 });
 
-// Authenticated Configuration Update
+// Authenticated Configuration Update (Canonical schema with safe secret persistence)
 app.post('/config', authenticateHttp, (req, res) => {
   const {
     activeProvider,
+    selectedProvider,
     hybridRoutingPolicy,
     geminiApiKey,
+    geminiKey,
     anthropicApiKey,
+    anthropicKey,
     openaiApiKey,
+    openAiKey,
+    openaiKey,
     ollamaUrl,
     ollamaModel,
     preferLocalOllama,
     allowFallbackOnMissingCredentials
   } = req.body || {};
 
-  if (activeProvider !== undefined) config.activeProvider = activeProvider;
+  const targetProvider = activeProvider || selectedProvider;
+  if (targetProvider !== undefined) config.activeProvider = targetProvider;
   if (hybridRoutingPolicy !== undefined) config.hybridRoutingPolicy = hybridRoutingPolicy;
   if (ollamaUrl !== undefined) config.ollamaUrl = ollamaUrl.trim();
   if (ollamaModel !== undefined) config.ollamaModel = ollamaModel.trim();
@@ -290,21 +401,36 @@ app.post('/config', authenticateHttp, (req, res) => {
     config.allowFallbackOnMissingCredentials = Boolean(allowFallbackOnMissingCredentials);
   }
 
-  // Update secret keys only if provided and not masked
-  if (geminiApiKey !== undefined && !geminiApiKey.includes('••••')) {
-    config.geminiApiKey = geminiApiKey.trim();
-  }
-  if (anthropicApiKey !== undefined && !anthropicApiKey.includes('••••')) {
-    config.anthropicApiKey = anthropicApiKey.trim();
-  }
-  if (openaiApiKey !== undefined && !openaiApiKey.includes('••••')) {
-    config.openaiApiKey = openaiApiKey.trim();
+  // Update secret keys with explicit semantics:
+  // - Omitted or containing '••••': preserve existing secret
+  // - Explicit null or empty string "": delete credential
+  // - New non-empty string: update credential
+  let secretsChanged = false;
+
+  const handleSecretField = (key, val) => {
+    if (val === undefined) return;
+    if (typeof val === 'string' && val.includes('••••')) return;
+    if (val === null || val === '') {
+      secrets[key] = '';
+      secretsChanged = true;
+    } else if (typeof val === 'string' && val.trim().length > 0) {
+      secrets[key] = val.trim();
+      secretsChanged = true;
+    }
+  };
+
+  handleSecretField('geminiApiKey', geminiApiKey ?? geminiKey);
+  handleSecretField('anthropicApiKey', anthropicApiKey ?? anthropicKey);
+  handleSecretField('openaiApiKey', openaiApiKey ?? openAiKey ?? openaiKey);
+
+  if (secretsChanged) {
+    persistSecretsFile();
   }
 
-  // Dynamically update orchestrator config
-  orchestrator.updateConfig(config);
+  // Dynamically update orchestrator config with merged settings and credentials
+  orchestrator.updateConfig({ ...config, ...secrets });
 
-  // Persist updated configuration
+  // Persist updated non-secret configuration
   persistConfigFile();
 
   auditLogger.log({
@@ -314,9 +440,9 @@ app.post('/config', authenticateHttp, (req, res) => {
     params: {
       activeProvider: config.activeProvider,
       hybridRoutingPolicy: config.hybridRoutingPolicy,
-      hasGemini: Boolean(config.geminiApiKey || process.env.GEMINI_API_KEY),
-      hasAnthropic: Boolean(config.anthropicApiKey || process.env.ANTHROPIC_API_KEY),
-      hasOpenai: Boolean(config.openaiApiKey || process.env.OPENAI_API_KEY),
+      hasGemini: Boolean(secrets.geminiApiKey || process.env.GEMINI_API_KEY),
+      hasAnthropic: Boolean(secrets.anthropicApiKey || process.env.ANTHROPIC_API_KEY),
+      hasOpenai: Boolean(secrets.openaiApiKey || process.env.OPENAI_API_KEY),
       ollamaUrl: config.ollamaUrl
     }
   });
@@ -326,9 +452,9 @@ app.post('/config', authenticateHttp, (req, res) => {
     message: 'Configuration updated and applied.',
     activeProvider: config.activeProvider,
     hybridRoutingPolicy: config.hybridRoutingPolicy,
-    hasGeminiKey: Boolean(config.geminiApiKey || process.env.GEMINI_API_KEY),
-    hasAnthropicKey: Boolean(config.anthropicApiKey || process.env.ANTHROPIC_API_KEY),
-    hasOpenaiKey: Boolean(config.openaiApiKey || process.env.OPENAI_API_KEY),
+    hasGeminiKey: Boolean(secrets.geminiApiKey || process.env.GEMINI_API_KEY),
+    hasAnthropicKey: Boolean(secrets.anthropicApiKey || process.env.ANTHROPIC_API_KEY),
+    hasOpenaiKey: Boolean(secrets.openaiApiKey || process.env.OPENAI_API_KEY),
     ollamaUrl: config.ollamaUrl,
     preferLocalOllama: config.preferLocalOllama
   });
@@ -380,8 +506,9 @@ app.delete('/workspaces', authenticateHttp, (req, res) => {
 // Provider Status Check (without revealing secrets)
 app.get('/providers', authenticateHttp, async (req, res) => {
   try {
-    const router = new HybridRouter(config);
-    const availability = router.getProviderAvailability(config);
+    const mergedConfig = { ...config, ...secrets };
+    const router = new HybridRouter(mergedConfig);
+    const availability = router.getProviderAvailability(mergedConfig);
 
     const ollama = new OllamaProvider(availability.ollama.baseUrl, availability.ollama.model);
     const ollamaHealth = await ollama.checkHealth(1200);
@@ -453,23 +580,13 @@ app.post('/task', authenticateHttp, async (req, res) => {
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 });
 
-// WebSocket Upgrade & Authentication (Supports both query token and handshake message per Phase 9.4)
+// WebSocket Upgrade (URL query tokens deprecated; all clients authenticate over handshake message)
 server.on('upgrade', (request, socket, head) => {
   try {
-    const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
-    const token = url.searchParams.get('token');
-
-    // If query token provided and incorrect, reject
-    if (token && token !== AUTH_TOKEN) {
-      console.warn(`[Server] Rejected unauthorized WS connection from ${request.socket.remoteAddress}`);
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-
-    // Upgrade socket
     wss.handleUpgrade(request, socket, head, (ws) => {
-      ws.__authenticated = (token === AUTH_TOKEN);
+      ws.__authenticated = false;
+      ws.__authHandshakeDone = false;
+      ws.__connectedAt = Date.now();
       wss.emit('connection', ws, request);
     });
   } catch (err) {
@@ -477,31 +594,23 @@ server.on('upgrade', (request, socket, head) => {
   }
 });
 
-// WebSocket Connection Handling
+// WebSocket Connection Lifecycle & Authentication Enforcement
 wss.on('connection', (ws, req) => {
   console.log(`[Server] Antigravity Extension connected from ${req.socket.remoteAddress}`);
 
   let currentTaskAbort = null;
   let handshakeTimer = null;
 
-  // If not authenticated via query token, require AUTH_HANDSHAKE within 5 seconds
-  if (!ws.__authenticated) {
-    handshakeTimer = setTimeout(() => {
-      if (!ws.__authenticated) {
-        console.warn('[Server] WS connection timed out waiting for authentication handshake');
+  // Enforce mandatory AUTH_HANDSHAKE message within 5 seconds
+  handshakeTimer = setTimeout(() => {
+    if (!ws.__authenticated) {
+      console.warn('[Server] WS connection timed out waiting for authentication handshake');
+      try {
+        ws.send(JSON.stringify({ type: 'AUTH_FAILED', error: 'Authentication handshake timeout' }));
         ws.close(4001, 'Authentication handshake timeout');
-      }
-    }, 5000);
-  } else {
-    extensionClient = ws;
-    ws.send(JSON.stringify({
-      type: 'ENGINE_STATUS',
-      connected: true,
-      authenticated: true,
-      port: PORT,
-      message: 'Connected to Antigravity Local Agent Engine'
-    }));
-  }
+      } catch (e) {}
+    }
+  }, 5000);
 
   ws.on('message', async (data) => {
     try {
@@ -512,20 +621,47 @@ wss.on('connection', (ws, req) => {
 
       const msg = JSON.parse(data.toString());
 
-      // Handle Handshake Authentication Message
+      // Handle Authentication Handshake
       if (msg.type === 'AUTH_HANDSHAKE') {
-        if (msg.token === AUTH_TOKEN) {
-          ws.__authenticated = true;
-          extensionClient = ws;
+        if (ws.__authHandshakeDone) {
+          return; // Ignore duplicate handshake attempts
+        }
+        ws.__authHandshakeDone = true;
+
+        if (msg.token && msg.token === AUTH_TOKEN) {
           if (handshakeTimer) clearTimeout(handshakeTimer);
+          ws.__authenticated = true;
+
+          // Prevent duplicate / stale sockets from overriding newer connection
+          if (extensionClient && extensionClient !== ws && extensionClient.readyState === 1) {
+            try {
+              extensionClient.close(4000, 'Superceded by newer connection');
+            } catch (e) {}
+          }
+          extensionClient = ws;
+
+          auditLogger.log({
+            action: 'WS_AUTH_SUCCESS',
+            status: 'APPROVED',
+            riskLevel: 'low',
+            params: { ip: req.socket.remoteAddress }
+          });
+
           ws.send(JSON.stringify({
             type: 'ENGINE_STATUS',
             connected: true,
             authenticated: true,
             port: PORT,
-            message: 'Authentication successful. Connected to Local Agent Engine.'
+            message: 'Authentication successful. Connected to Antigravity Local Agent Engine.'
           }));
         } else {
+          if (handshakeTimer) clearTimeout(handshakeTimer);
+          auditLogger.log({
+            action: 'WS_AUTH_FAILED',
+            status: 'DENIED',
+            riskLevel: 'medium',
+            params: { ip: req.socket.remoteAddress }
+          });
           ws.send(JSON.stringify({ type: 'AUTH_FAILED', error: 'Invalid security token' }));
           ws.close(4003, 'Invalid token');
         }
@@ -534,7 +670,7 @@ wss.on('connection', (ws, req) => {
 
       // Block all other messages if unauthenticated
       if (!ws.__authenticated) {
-        ws.send(JSON.stringify({ type: 'AUTH_REQUIRED', error: 'Authentication required' }));
+        ws.send(JSON.stringify({ type: 'AUTH_REQUIRED', error: 'Authentication required. Complete AUTH_HANDSHAKE first.' }));
         return;
       }
 
@@ -569,9 +705,11 @@ wss.on('connection', (ws, req) => {
         case 'USER_TASK': {
           emergencyCoordinator.resetHalt();
           currentTaskAbort = emergencyCoordinator.createAbortController();
+          const taskConversationId = msg.conversationId || null;
           try {
             await orchestrator.runTask({
               task: msg.task,
+              conversationId: taskConversationId,
               providerName: msg.provider || config.activeProvider || 'hybrid',
               context: msg.context || {},
               clientWs: ws,
@@ -580,6 +718,7 @@ wss.on('connection', (ws, req) => {
           } catch (taskErr) {
             ws.send(JSON.stringify({
               type: 'AGENT_MESSAGE',
+              conversationId: taskConversationId,
               message: `❌ Task Error: ${taskErr.message}`
             }));
           } finally {

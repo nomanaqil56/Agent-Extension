@@ -55,13 +55,13 @@ class HybridRouter {
     };
   }
 
-  // Check which providers are configured and ready
+  // Check which providers are configured and ready using canonical configuration schema
   getProviderAvailability(config = {}) {
-    const geminiKey = process.env.GEMINI_API_KEY || config.geminiKey || config.providers?.gemini?.apiKey;
-    const anthropicKey = process.env.ANTHROPIC_API_KEY || config.anthropicKey || config.providers?.anthropic?.apiKey;
-    const openAiKey = process.env.OPENAI_API_KEY || config.openAiKey || config.providers?.openai?.apiKey;
+    const geminiKey = process.env.GEMINI_API_KEY || config.geminiApiKey || config.geminiKey || config.providers?.gemini?.apiKey;
+    const anthropicKey = process.env.ANTHROPIC_API_KEY || config.anthropicApiKey || config.anthropicKey || config.providers?.anthropic?.apiKey;
+    const openAiKey = process.env.OPENAI_API_KEY || config.openaiApiKey || config.openAiKey || config.openaiKey || config.providers?.openai?.apiKey;
     const ollamaBaseUrl = process.env.OLLAMA_BASE_URL || config.ollamaUrl || config.providers?.ollama?.baseUrl || 'http://localhost:11434';
-    const ollamaModel = config.providers?.ollama?.model || 'llama3.2';
+    const ollamaModel = config.ollamaModel || config.providers?.ollama?.model || process.env.OLLAMA_MODEL || 'llama3';
 
     return {
       gemini: { available: Boolean(geminiKey), key: geminiKey, model: config.providers?.gemini?.model || 'gemini-2.0-flash' },

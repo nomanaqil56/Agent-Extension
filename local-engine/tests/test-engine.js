@@ -454,6 +454,164 @@ async function runTests() {
     assert.strictEqual(orchestrator.config.ollamaUrl, 'http://127.0.0.1:11434');
   });
 
+  // 15. Desktop Application Process Security & Argument Validation (P0 Security)
+  await test('Desktop Security: Rejects command injection, unapproved binaries, and unsafe arguments', async () => {
+    const desktopTool = tools.desktopTool;
+
+    // Unapproved executable
+    let unapprovedBlocked = false;
+    try {
+      await desktopTool.launchApp('powershell', ['-Command', 'calc']);
+    } catch (e) {
+      unapprovedBlocked = e.message.includes('not in the approved');
+    }
+    assert.strictEqual(unapprovedBlocked, true, 'Unapproved binary powershell must be blocked');
+
+    // Calc with dangerous arguments
+    let calcArgsBlocked = false;
+    try {
+      await desktopTool.launchApp('calc', ['& calc.exe']);
+    } catch (e) {
+      calcArgsBlocked = e.message.includes('takes no command-line arguments');
+    }
+    assert.strictEqual(calcArgsBlocked, true, 'calc must not accept arguments');
+
+    // Notepad with flag switch
+    let notepadSwitchBlocked = false;
+    try {
+      await desktopTool.launchApp('notepad', ['/A']);
+    } catch (e) {
+      notepadSwitchBlocked = e.message.includes('Switch flags are not permitted');
+    }
+    assert.strictEqual(notepadSwitchBlocked, true, 'notepad must not accept flag switches');
+
+    // Null-byte in argument
+    let nullByteBlocked = false;
+    try {
+      await desktopTool.launchApp('code', ['file.js\0malicious']);
+    } catch (e) {
+      nullByteBlocked = e.message.includes('null bytes');
+    }
+    assert.strictEqual(nullByteBlocked, true, 'Arguments with null bytes must be blocked');
+
+    // Control characters in argument
+    let ctrlCharBlocked = false;
+    try {
+      await desktopTool.launchApp('code', ['file.js\x1b[31m']);
+    } catch (e) {
+      ctrlCharBlocked = e.message.includes('control characters');
+    }
+    assert.strictEqual(ctrlCharBlocked, true, 'Arguments with control chars must be blocked');
+  });
+
+  // 16. Clipboard Security & Stdin Stream Isolation (P0 Security)
+  await test('Clipboard Security: Treats clipboard text as untrusted data without shell interpretation', async () => {
+    const desktopTool = tools.desktopTool;
+
+    // Write text containing PowerShell sub-expressions, quotes, newlines, and metacharacters
+    const attackPayload = '$(calc.exe); & whoami ` | Out-File evil.txt; "quotes" \'single\'\nNewline payload \u2605';
+    const writeResult = await desktopTool.writeClipboard(attackPayload);
+    assert.strictEqual(writeResult.success, true, 'Safe clipboard write must succeed without command execution');
+
+    // Read back and verify exact data integrity without code execution
+    const readResult = await desktopTool.readClipboard();
+    assert.ok(readResult.text.includes('$(calc.exe)'), 'Payload text must be preserved verbatim as data');
+    assert.ok(readResult.text.includes('quotes'), 'Quotes must be preserved verbatim');
+    // Ensure no evil.txt was created
+    assert.strictEqual(fs.existsSync(path.join(workspaceRoot, 'evil.txt')), false, 'Shell command must not execute');
+  });
+
+  // 17. Audit Logger Advanced Redaction & Large Payload Truncation (P1 Security)
+  await test('Audit Logger: Redacts multiple key formats, Bearer tokens, hex hashes, and truncates large payloads', async () => {
+    const fakeGemini = 'AIzaSyAABBCCDDEEFFGG1122334455';
+    const fakeAnthropic = 'sk-ant-api03-abcdef1234567890abcdef1234567890';
+    const fakeOpenai = 'sk-proj-abcde12345abcde12345abcde';
+    const fakeBearer = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.t-IDcSemACt8x4iTMCda8Yhe3iZaWbvV5XKSTbuAn0M';
+    const fakeHexSecret = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const largeContent = 'A'.repeat(500);
+
+    const logged = auditLogger.log({
+      action: 'DEEP_REDACTION_TEST',
+      params: {
+        geminiApiKey: fakeGemini,
+        anthropicApiKey: fakeAnthropic,
+        openaiApiKey: fakeOpenai,
+        authHeader: fakeBearer,
+        secretHex: fakeHexSecret,
+        bigBody: largeContent
+      }
+    });
+
+    const asString = JSON.stringify(logged);
+    assert.ok(!asString.includes(fakeGemini), 'Gemini key must be redacted');
+    assert.ok(!asString.includes(fakeAnthropic), 'Anthropic key must be redacted');
+    assert.ok(!asString.includes(fakeOpenai), 'OpenAI key must be redacted');
+    assert.ok(!asString.includes(fakeBearer), 'Bearer token must be redacted');
+    assert.ok(!asString.includes(fakeHexSecret), 'Hex secret must be redacted');
+    assert.ok(asString.includes('[TRUNCATED 500 chars]'), 'Large content must be truncated');
+  });
+
+  // 18. Canonical Provider Configuration Schema (P0 Integration)
+  await test('Canonical Provider Schema: HybridRouter resolves canonical names and backward-compatible aliases', async () => {
+    const router = new HybridRouter({});
+
+    // Canonical keys
+    const canonicalConfig = {
+      geminiApiKey: 'gemini-canon-key',
+      anthropicApiKey: 'anthropic-canon-key',
+      openaiApiKey: 'openai-canon-key',
+      ollamaUrl: 'http://127.0.0.1:11434',
+      ollamaModel: 'deepseek-r1'
+    };
+    const avail1 = router.getProviderAvailability(canonicalConfig);
+    assert.strictEqual(avail1.gemini.available, true);
+    assert.strictEqual(avail1.gemini.key, 'gemini-canon-key');
+    assert.strictEqual(avail1.anthropic.key, 'anthropic-canon-key');
+    assert.strictEqual(avail1.openai.key, 'openai-canon-key');
+    assert.strictEqual(avail1.ollama.baseUrl, 'http://127.0.0.1:11434');
+    assert.strictEqual(avail1.ollama.model, 'deepseek-r1');
+
+    // Legacy aliases
+    const legacyConfig = {
+      geminiKey: 'gemini-leg-key',
+      anthropicKey: 'anthropic-leg-key',
+      openAiKey: 'openai-leg-key'
+    };
+    const avail2 = router.getProviderAvailability(legacyConfig);
+    assert.strictEqual(avail2.gemini.key, 'gemini-leg-key');
+    assert.strictEqual(avail2.anthropic.key, 'anthropic-leg-key');
+    assert.strictEqual(avail2.openai.key, 'openai-leg-key');
+  });
+
+  // 19. Workspace Lockdown: Out-of-workspace operations are strictly forbidden without prompting approval
+  await test('Workspace Lockdown: Out-of-workspace file actions are strictly forbidden', async () => {
+    const pm = new PermissionManager({ approvedDirectories: [workspaceRoot] });
+
+    // read_file outside workspace -> forbidden
+    const readRisk = pm.analyzeActionRisk('read_file', { filePath: 'C:\\Windows\\win.ini' });
+    assert.strictEqual(readRisk.blocked, true);
+    assert.strictEqual(readRisk.riskLevel, 'forbidden');
+    assert.strictEqual(readRisk.needsApproval, false);
+
+    // write_file outside workspace -> forbidden
+    const writeRisk = pm.analyzeActionRisk('write_file', { filePath: 'C:\\Windows\\system32\\bad.dll' });
+    assert.strictEqual(writeRisk.blocked, true);
+    assert.strictEqual(writeRisk.riskLevel, 'forbidden');
+    assert.strictEqual(writeRisk.needsApproval, false);
+
+    // delete_file outside workspace -> forbidden
+    const deleteRisk = pm.analyzeActionRisk('delete_file', { filePath: 'C:\\Windows\\system32\\hosts' });
+    assert.strictEqual(deleteRisk.blocked, true);
+    assert.strictEqual(deleteRisk.riskLevel, 'forbidden');
+    assert.strictEqual(deleteRisk.needsApproval, false);
+
+    // list_files outside workspace -> forbidden
+    const listRisk = pm.analyzeActionRisk('list_files', { dirPath: 'C:\\Windows' });
+    assert.strictEqual(listRisk.blocked, true);
+    assert.strictEqual(listRisk.riskLevel, 'forbidden');
+    assert.strictEqual(listRisk.needsApproval, false);
+  });
+
   // Clean up test log directory
   try {
     fs.rmSync(testLogsDir, { recursive: true, force: true });

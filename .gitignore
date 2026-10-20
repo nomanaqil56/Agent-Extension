@@ -2,10 +2,13 @@
 node_modules/
 package-lock.json
 
-# Environment variables
+# Environment variables & Local Secrets
 .env
 .env.local
 *.env
+.secrets.json
+*.secrets.json
+local-engine/.secrets.json
 
 # Logs and audit data
 logs/

@@ -34,9 +34,21 @@ class AuditLogger {
     };
 
     try {
+      this.ensureLogDir();
+      // Bound log file size: prune old lines if file exceeds 5MB
+      if (fs.existsSync(this.logFile)) {
+        const stats = fs.statSync(this.logFile);
+        if (stats.size > 5 * 1024 * 1024) {
+          const content = fs.readFileSync(this.logFile, 'utf8');
+          const lines = content.trim().split('\n');
+          if (lines.length > 1000) {
+            fs.writeFileSync(this.logFile, lines.slice(-1000).join('\n') + '\n', 'utf8');
+          }
+        }
+      }
       fs.appendFileSync(this.logFile, JSON.stringify(entry) + '\n', 'utf8');
     } catch (err) {
-      console.error('[AuditLogger] Failed to write log entry:', err);
+      console.error('[AuditLogger] Failed to write log entry:', err.message);
     }
 
     return entry;
@@ -83,28 +95,44 @@ class AuditLogger {
   redactString(str) {
     if (typeof str !== 'string') return str;
     return str
-      .replace(/token=([a-zA-Z0-9_\-]+)/gi, 'token=***REDACTED***')
-      .replace(/key=([a-zA-Z0-9_\-]+)/gi, 'key=***REDACTED***')
-      .replace(/bearer\s+([a-zA-Z0-9_\-\.]+)/gi, 'Bearer ***REDACTED***')
-      .replace(/sk-(ant|proj)-[a-zA-Z0-9_\-]+/gi, 'sk-***REDACTED***')
-      .replace(/AIzaSy[a-zA-Z0-9_\-]+/gi, 'AIzaSy***REDACTED***');
+      .replace(/(?:token|auth_token|authToken)=([a-zA-Z0-9_\-]+)/gi, 'token=***REDACTED***')
+      .replace(/(?:key|apiKey|geminiApiKey|anthropicApiKey|openaiApiKey)=([a-zA-Z0-9_\-]+)/gi, 'key=***REDACTED***')
+      .replace(/(bearer\s+)[a-zA-Z0-9_\-\.]+/gi, '$1***REDACTED***')
+      .replace(/sk-(ant|proj|live|test)?-[a-zA-Z0-9_\-]{16,}/gi, 'sk-***REDACTED***')
+      .replace(/AIzaSy[a-zA-Z0-9_\-]{20,}/gi, 'AIzaSy***REDACTED***')
+      .replace(/\b[a-f0-9]{32,64}\b/gi, '***REDACTED_HEX_KEY***');
   }
 
-  // Sanitize potentially sensitive data (e.g. passwords/tokens/keys)
+  // Sanitize potentially sensitive data (e.g. passwords/tokens/keys) and truncate large content
   sanitize(obj) {
     if (!obj || typeof obj !== 'object') {
-      if (typeof obj === 'string') return this.redactString(obj);
+      if (typeof obj === 'string') {
+        const redacted = this.redactString(obj);
+        if (redacted.length > 256) {
+          return redacted.slice(0, 128) + `... [TRUNCATED ${redacted.length} chars]`;
+        }
+        return redacted;
+      }
       return obj;
     }
     try {
       const copy = JSON.parse(JSON.stringify(obj));
-      const sensitiveKeys = ['apikey', 'password', 'token', 'auth', 'secret', 'authtoken', 'privatekey'];
+      const sensitiveKeys = [
+        'apikey', 'password', 'token', 'auth', 'secret', 'authtoken',
+        'privatekey', 'bearer', 'credential', 'geminiapikey',
+        'anthropicapikey', 'openaiapikey', 'authorization', 'pairingcode'
+      ];
       const traverse = (o) => {
         for (const k in o) {
           if (sensitiveKeys.some(s => k.toLowerCase().includes(s))) {
             o[k] = '***REDACTED***';
           } else if (typeof o[k] === 'string') {
-            o[k] = this.redactString(o[k]);
+            const redacted = this.redactString(o[k]);
+            if (redacted.length > 256) {
+              o[k] = redacted.slice(0, 128) + `... [TRUNCATED ${redacted.length} chars]`;
+            } else {
+              o[k] = redacted;
+            }
           } else if (typeof o[k] === 'object' && o[k] !== null) {
             traverse(o[k]);
           }
