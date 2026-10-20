@@ -97,7 +97,7 @@ class ToolRegistry {
         timeoutMs: { type: 'number', description: 'Timeout in milliseconds' }
       },
       required: ['command']
-    }, (p) => this.terminalTool.executeCommand(p));
+    }, (p, abortSignal) => this.terminalTool.executeCommand(p, abortSignal));
 
     // 3. Desktop Tools
     this.addTool('launch_application', 'Launch a pre-approved desktop application (e.g. code, calc, notepad, git)', {
@@ -305,7 +305,7 @@ class ToolRegistry {
     });
 
     try {
-      const result = await tool.handler(params);
+      const result = await tool.handler(params, abortSignal);
       const durationMs = Date.now() - startTime;
 
       this.auditLogger.log({

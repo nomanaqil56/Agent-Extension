@@ -2,8 +2,52 @@
 
 class OllamaProvider {
   constructor(baseUrl = 'http://localhost:11434', model = 'llama3.2') {
-    this.baseUrl = baseUrl.replace(/\/$/, '');
-    this.model = model;
+    this.name = 'ollama';
+    this.baseUrl = (baseUrl || 'http://localhost:11434').replace(/\/$/, '');
+    this.model = model || 'llama3.2';
+    this.supportsTools = true;
+    this.supportsStreaming = false;
+  }
+
+  // Check if Ollama daemon is reachable and whether models are installed
+  async checkHealth(timeoutMs = 1500) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      const res = await fetch(`${this.baseUrl}/api/tags`, {
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+
+      if (!res.ok) {
+        return {
+          healthy: false,
+          error: `Ollama returned HTTP ${res.status}`
+        };
+      }
+
+      const data = await res.json();
+      const models = (data.models || []).map(m => m.name);
+      const hasConfiguredModel = models.some(m => m === this.model || m.startsWith(`${this.model}:`));
+
+      return {
+        healthy: true,
+        installedModels: models,
+        hasConfiguredModel,
+        activeModel: this.model
+      };
+    } catch (err) {
+      return {
+        healthy: false,
+        error: `Ollama service unreachable at ${this.baseUrl}: ${err.message}`
+      };
+    }
+  }
+
+  async listModels() {
+    const health = await this.checkHealth();
+    return health.installedModels || [];
   }
 
   async generateStep(messages, tools = []) {
@@ -43,10 +87,14 @@ class OllamaProvider {
 
       if (msg.tool_calls && msg.tool_calls.length > 0) {
         const call = msg.tool_calls[0];
+        let args = call.function.arguments || {};
+        if (typeof args === 'string') {
+          try { args = JSON.parse(args); } catch (e) {}
+        }
         return {
           type: 'tool_call',
           tool: call.function.name,
-          params: call.function.arguments || {}
+          params: args
         };
       }
 

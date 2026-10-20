@@ -12,6 +12,20 @@ class PermissionManager {
     );
     this.pendingApprovals = new Map();
     this.sessionAuthorizations = new Set();
+
+    // Sensitive files patterns that require explicit authorization
+    this.sensitiveFilePatterns = [
+      /\.env(\..+)?$/i,
+      /id_rsa/i,
+      /id_ed25519/i,
+      /\.pem$/i,
+      /\.key$/i,
+      /credentials/i,
+      /shadow$/i,
+      /passwd$/i,
+      /\.gitconfig$/i,
+      /\.bash_history$/i
+    ];
   }
 
   // Canonicalize a path and resolve symlinks defensively
@@ -41,6 +55,13 @@ class PermissionManager {
     }
   }
 
+  // Check if a target file matches sensitive secret file patterns
+  isSensitiveFile(filePath) {
+    if (!filePath || typeof filePath !== 'string') return false;
+    const base = path.basename(filePath);
+    return this.sensitiveFilePatterns.some(pat => pat.test(base) || pat.test(filePath));
+  }
+
   // Normalize path parameter aliases across different tool schemas
   normalizeFilePath(params = {}) {
     if (!params || typeof params !== 'object') return null;
@@ -53,13 +74,43 @@ class PermissionManager {
     return params.dirPath || params.directory || params.path || params.cwd || '.';
   }
 
+  // Get current list of approved directories
+  getApprovedDirectories() {
+    return [...this.approvedDirectories];
+  }
+
   // Add a user-approved folder scope
   addApprovedDirectory(dirPath) {
-    if (!dirPath || typeof dirPath !== 'string') return;
+    if (!dirPath || typeof dirPath !== 'string') return null;
     const resolved = path.resolve(dirPath);
-    if (!this.approvedDirectories.includes(resolved)) {
-      this.approvedDirectories.push(resolved);
+    if (!fs.existsSync(resolved)) {
+      throw new Error(`Directory does not exist: "${resolved}"`);
     }
+    const stat = fs.statSync(resolved);
+    if (!stat.isDirectory()) {
+      throw new Error(`Path is not a directory: "${resolved}"`);
+    }
+    const canonical = this.canonicalizePath(resolved);
+    if (!this.approvedDirectories.includes(canonical)) {
+      this.approvedDirectories.push(canonical);
+    }
+    return canonical;
+  }
+
+  // Remove an approved folder scope
+  removeApprovedDirectory(dirPath) {
+    if (!dirPath || typeof dirPath !== 'string') return false;
+    const canonical = this.canonicalizePath(path.resolve(dirPath)) || path.resolve(dirPath);
+    const initialLength = this.approvedDirectories.length;
+    this.approvedDirectories = this.approvedDirectories.filter(d => {
+      const isWin = process.platform === 'win32';
+      return isWin ? d.toLowerCase() !== canonical.toLowerCase() : d !== canonical;
+    });
+    // Ensure at least one directory remains
+    if (this.approvedDirectories.length === 0) {
+      this.approvedDirectories.push(process.cwd());
+    }
+    return this.approvedDirectories.length < initialLength;
   }
 
   // Validate if a path falls within approved directories (including symlink resolution and traversal defense)
@@ -95,9 +146,21 @@ class PermissionManager {
       case 'browser_screenshot':
       case 'browser_scroll':
       case 'get_system_info':
-      case 'clipboard_read':
       case 'clipboard_write':
         return { allowed: true, needsApproval: false, riskLevel: 'low' };
+
+      // Clipboard Read: Sensitive because it may contain passwords or private keys
+      case 'clipboard_read': {
+        if (this.config.security?.requireApprovalForClipboardRead !== false) {
+          return {
+            allowed: false,
+            needsApproval: true,
+            riskLevel: 'medium',
+            reason: 'Reading system clipboard text requires user authorization.'
+          };
+        }
+        return { allowed: true, needsApproval: false, riskLevel: 'low' };
+      }
 
       // Filesystem Reads & Exploration
       case 'list_files':
@@ -128,10 +191,19 @@ class PermissionManager {
             reason: `Path "${filePath}" is outside approved workspace directories.`
           };
         }
+        // Protect secret credentials and private key files
+        if (this.isSensitiveFile(filePath)) {
+          return {
+            allowed: false,
+            needsApproval: true,
+            riskLevel: 'high',
+            reason: `Sensitive credential file "${path.basename(filePath)}" requires explicit user approval to inspect.`
+          };
+        }
         return { allowed: true, needsApproval: false, riskLevel: 'low' };
       }
 
-      // Medium Risk: File Writes inside whitelisted directories
+      // File Writes inside approved directories - REQUIRED APPROVAL BY DEFAULT
       case 'write_file':
       case 'patch_file': {
         const filePath = this.normalizeFilePath(params);
@@ -146,18 +218,22 @@ class PermissionManager {
             reason: `Attempting to write file outside approved directories: "${filePath}"`
           };
         }
-        if (this.config.security?.requireApprovalForFileWrite) {
+        // Default requireApprovalForFileWrite is true per Phase 10.5
+        if (this.config.security?.requireApprovalForFileWrite !== false) {
+          const isPatch = tool === 'patch_file';
           return {
             allowed: false,
             needsApproval: true,
-            riskLevel: 'medium',
-            reason: `Modifying file: "${path.basename(filePath)}"`
+            riskLevel: this.isSensitiveFile(filePath) ? 'high' : 'medium',
+            reason: isPatch
+              ? `Modifying content in: "${path.basename(filePath)}"`
+              : `Writing or overwriting file: "${path.basename(filePath)}"`
           };
         }
         return { allowed: true, needsApproval: false, riskLevel: 'medium' };
       }
 
-      // High Risk: File deletion
+      // High Risk: File deletion - REQUIRED APPROVAL BY DEFAULT
       case 'delete_file': {
         const filePath = this.normalizeFilePath(params);
         if (!filePath) {
@@ -218,7 +294,7 @@ class PermissionManager {
           return { allowed: true, needsApproval: false, riskLevel: 'medium' };
         }
 
-        // Shell executions require confirmation if configured
+        // Shell executions require confirmation by default
         if (this.config.security?.requireApprovalForShell !== false) {
           return {
             allowed: false,

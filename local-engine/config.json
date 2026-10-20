@@ -3,8 +3,9 @@
   "host": "127.0.0.1",
   "authToken": "",
   "activeProvider": "hybrid",
+  "hybridRoutingPolicy": "balanced",
   "approvedDirectories": [
-    "D:\\Coding\\Projects\\Personal Projects\\Agent-Extension"
+    "."
   ],
   "approvedApplications": [
     "code",
@@ -17,8 +18,9 @@
   ],
   "security": {
     "requireApprovalForShell": true,
-    "requireApprovalForFileWrite": false,
+    "requireApprovalForFileWrite": true,
     "requireApprovalForFileDelete": true,
+    "requireApprovalForClipboardRead": true,
     "maxShellExecutionTimeoutMs": 45000,
     "blockedShellPatterns": [
       "format\\s+[a-zA-Z]:",

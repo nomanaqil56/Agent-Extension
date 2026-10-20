@@ -3,7 +3,20 @@
 
 class FallbackAgentProvider {
   constructor(toolRegistry) {
+    this.name = 'autonomous';
+    this.model = 'deterministic-rules';
+    this.supportsTools = true;
+    this.supportsStreaming = false;
     this.toolRegistry = toolRegistry;
+  }
+
+  async checkHealth() {
+    return {
+      healthy: true,
+      provider: 'autonomous',
+      engine: 'deterministic-offline',
+      toolsCount: this.toolRegistry?.tools?.size || 0
+    };
   }
 
   // Generate a multi-step plan based on natural language task and browser context

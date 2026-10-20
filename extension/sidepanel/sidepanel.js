@@ -1,5 +1,5 @@
 // Antigravity Browser Agent - Side Panel Controller
-// Manages chat streaming, voice input, approvals, audit logs, and settings
+// Manages chat streaming, conversation history persistence, voice input, approvals, audit logs, and settings
 
 document.addEventListener('DOMContentLoaded', () => {
   // DOM Elements
@@ -11,8 +11,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const pageTitleText = document.getElementById('page-title-text');
   const modelSelect = document.getElementById('model-select');
 
+  // Conversation Elements
+  const btnNewChat = document.getElementById('btn-new-chat');
+  const conversationSelect = document.getElementById('conversation-select');
+  const btnClearChat = document.getElementById('btn-clear-chat');
+
   // Chat Elements
   const chatMessages = document.getElementById('chat-messages');
+  const welcomeCard = document.getElementById('welcome-card');
   const userInput = document.getElementById('user-input');
   const sendBtn = document.getElementById('send-btn');
   const voiceBtn = document.getElementById('voice-btn');
@@ -27,12 +33,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const approvalsCountBadge = document.getElementById('approvals-count-badge');
   const approvalsList = document.getElementById('approvals-list');
   const auditList = document.getElementById('audit-list');
+  const refreshAuditBtn = document.getElementById('refresh-audit-btn');
   const clearAuditBtn = document.getElementById('clear-audit-btn');
 
   // Settings Elements
   const settingEngineUrl = document.getElementById('setting-engine-url');
   const settingAuthToken = document.getElementById('setting-auth-token');
   const settingProvider = document.getElementById('setting-provider');
+  const settingRoutingPolicy = document.getElementById('setting-routing-policy');
   const settingGeminiKey = document.getElementById('setting-gemini-key');
   const settingAnthropicKey = document.getElementById('setting-anthropic-key');
   const settingOpenAiKey = document.getElementById('setting-openai-key');
@@ -40,6 +48,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const settingAudioFeedback = document.getElementById('setting-audio-feedback');
   const saveSettingsBtn = document.getElementById('save-settings-btn');
   const settingsSavedHint = document.getElementById('settings-saved-hint');
+  const workspacesList = document.getElementById('workspaces-list');
+  const inputNewWorkspace = document.getElementById('input-new-workspace');
+  const btnAddWorkspace = document.getElementById('btn-add-workspace');
+  const providerHealthBadge = document.getElementById('provider-health-badge');
 
   // State
   let isConnected = false;
@@ -50,9 +62,14 @@ document.addEventListener('DOMContentLoaded', () => {
   let isListeningVoice = false;
   let currentStreamingBubble = null;
 
+  // Conversations State
+  let conversations = {};
+  let activeConversationId = null;
+
   // --- 1. Initialization & Active Tab Context ---
 
   loadSettings();
+  loadConversations();
   refreshActiveTabContext();
   checkEngineStatus();
 
@@ -68,6 +85,13 @@ document.addEventListener('DOMContentLoaded', () => {
       btn.classList.add('active');
       const targetView = document.getElementById(targetId);
       if (targetView) targetView.classList.add('active');
+
+      if (targetId === 'settings-view') {
+        loadWorkspaces();
+        checkProviderHealth();
+      } else if (targetId === 'audit-view') {
+        fetchAuditEntries();
+      }
     });
   });
 
@@ -82,13 +106,150 @@ document.addEventListener('DOMContentLoaded', () => {
     triggerEmergencyStop();
   });
 
-  // Model switch
+  // Model switch synchronizes with settings
   modelSelect.addEventListener('change', () => {
     chrome.storage.local.set({ selectedProvider: modelSelect.value });
+    if (settingProvider) settingProvider.value = modelSelect.value;
     appendSystemNotice(`Active provider switched to: ${modelSelect.options[modelSelect.selectedIndex].text}`);
+    recordMessage({ type: 'system', content: `Switched provider to ${modelSelect.value}` });
   });
 
-  // --- 2. Chat & Instruction Dispatch ---
+  // --- 2. Persistent Conversation History (Phase Thirteen) ---
+
+  function loadConversations() {
+    chrome.storage.local.get(['conversations', 'activeConversationId'], (res) => {
+      conversations = res.conversations || {};
+      activeConversationId = res.activeConversationId || null;
+
+      // Ensure at least one conversation exists
+      if (!activeConversationId || !conversations[activeConversationId]) {
+        const initialId = `conv_${Date.now()}`;
+        conversations[initialId] = {
+          id: initialId,
+          title: 'Initial Session',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          messages: []
+        };
+        activeConversationId = initialId;
+        saveConversations();
+      }
+
+      updateConversationDropdown();
+      renderActiveConversation();
+    });
+  }
+
+  function saveConversations() {
+    chrome.storage.local.set({
+      conversations,
+      activeConversationId
+    });
+  }
+
+  function updateConversationDropdown() {
+    conversationSelect.innerHTML = '';
+    const sorted = Object.values(conversations).sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+
+    sorted.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.id;
+      opt.textContent = c.title || 'Untitled Session';
+      if (c.id === activeConversationId) opt.selected = true;
+      conversationSelect.appendChild(opt);
+    });
+  }
+
+  function renderActiveConversation() {
+    chatMessages.innerHTML = '';
+    const conv = conversations[activeConversationId];
+    if (!conv || !conv.messages || conv.messages.length === 0) {
+      if (welcomeCard) {
+        chatMessages.appendChild(welcomeCard.cloneNode(true));
+        attachPillListeners();
+      }
+      return;
+    }
+
+    conv.messages.forEach(msg => {
+      if (msg.type === 'user') {
+        appendUserMessageDom(msg.content, msg.screenshot);
+      } else if (msg.type === 'agent') {
+        appendAgentMessageDom(msg.content);
+      } else if (msg.type === 'thought') {
+        renderAgentThoughtDom(msg.content);
+      } else if (msg.type === 'tool_step') {
+        renderToolStepDom(msg.tool, msg.params);
+      } else if (msg.type === 'tool_result') {
+        renderToolResultDom(msg.tool, msg.result, msg.error);
+      } else if (msg.type === 'system') {
+        appendSystemNoticeDom(msg.content);
+      }
+    });
+
+    scrollChat();
+  }
+
+  function recordMessage(item) {
+    if (!activeConversationId || !conversations[activeConversationId]) return;
+    const conv = conversations[activeConversationId];
+    conv.messages.push({
+      id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      timestamp: new Date().toISOString(),
+      ...item
+    });
+    conv.updatedAt = new Date().toISOString();
+
+    // Auto title on first user message
+    if (item.type === 'user' && conv.title === 'Initial Session' || conv.title.startsWith('New Task')) {
+      conv.title = item.content.slice(0, 28) + (item.content.length > 28 ? '...' : '');
+      updateConversationDropdown();
+    }
+
+    saveConversations();
+  }
+
+  btnNewChat.addEventListener('click', () => {
+    const newId = `conv_${Date.now()}`;
+    const count = Object.keys(conversations).length + 1;
+    conversations[newId] = {
+      id: newId,
+      title: `Task #${count}`,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      messages: []
+    };
+    activeConversationId = newId;
+    saveConversations();
+    updateConversationDropdown();
+    renderActiveConversation();
+  });
+
+  conversationSelect.addEventListener('change', () => {
+    activeConversationId = conversationSelect.value;
+    saveConversations();
+    renderActiveConversation();
+  });
+
+  btnClearChat.addEventListener('click', () => {
+    if (!activeConversationId || !conversations[activeConversationId]) return;
+    conversations[activeConversationId].messages = [];
+    conversations[activeConversationId].updatedAt = new Date().toISOString();
+    saveConversations();
+    renderActiveConversation();
+  });
+
+  function attachPillListeners() {
+    document.querySelectorAll('.agy-pill').forEach(pill => {
+      pill.addEventListener('click', () => {
+        const prompt = pill.getAttribute('data-prompt');
+        userInput.value = prompt;
+        handleSendPrompt();
+      });
+    });
+  }
+
+  // --- 3. Chat & Instruction Dispatch ---
 
   sendBtn.addEventListener('click', handleSendPrompt);
 
@@ -99,14 +260,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Prompt suggestions
-  document.querySelectorAll('.agy-pill').forEach(pill => {
-    pill.addEventListener('click', () => {
-      const prompt = pill.getAttribute('data-prompt');
-      userInput.value = prompt;
-      handleSendPrompt();
-    });
-  });
+  attachPillListeners();
 
   // Screenshot attachment
   btnSnapScreenshot.addEventListener('click', async () => {
@@ -136,7 +290,11 @@ document.addEventListener('DOMContentLoaded', () => {
     userInput.value = '';
     userInput.style.height = 'auto';
 
-    // Add user message to UI
+    // Remove welcome card on first message if present
+    const existingWelcome = document.getElementById('welcome-card');
+    if (existingWelcome) existingWelcome.remove();
+
+    // Add user message to UI & persist
     appendUserMessage(promptText, attachedScreenshot);
 
     isProcessing = true;
@@ -195,7 +353,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // --- 3. Message Stream Handling from Engine ---
+  // --- 4. Message Stream Handling from Engine ---
 
   chrome.runtime.onMessage.addListener((msg) => {
     switch (msg.type) {
@@ -206,7 +364,8 @@ document.addEventListener('DOMContentLoaded', () => {
       case 'PROVIDER_ACTIVE':
         if (msg.provider) {
           const isFback = msg.isFallback ? ' (Autonomous Fallback)' : '';
-          appendSystemNotice(`Active Provider: ${msg.provider.toUpperCase()}${isFback}`);
+          const policy = msg.policy ? ` [${msg.policy.toUpperCase()}]` : '';
+          appendSystemNotice(`Active Provider: ${msg.provider.toUpperCase()}${policy}${isFback}`);
         }
         break;
 
@@ -255,16 +414,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // --- 4. Direct Browser Fallback Agent (for zero-config offline mode) ---
-
+  // Direct Browser Fallback Agent (for zero-config offline mode)
   async function runDirectFallbackAgent(prompt, context) {
     showAgentStatus('Autonomous Engine: Analyzing browser action...');
-    await delay(400);
+    await delay(350);
 
     const lower = prompt.toLowerCase();
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-    // Handle common commands directly
     if (lower.includes('summarize') || lower.includes('summary')) {
       if (!tab?.id) {
         appendAgentMessage('No active tab found to summarize.');
@@ -275,7 +432,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const textRes = await chrome.tabs.sendMessage(tab.id, { action: 'EXTRACT_TEXT' });
       if (textRes && textRes.content) {
         const lines = textRes.content.split('\n').filter(l => l.length > 20).slice(0, 5);
-        appendAgentMessage(`### 📑 Page Summary: ${textRes.title}\n\n**URL**: ${textRes.url}\n\n**Key Content Highlights**:\n` +
+        appendAgentMessage(`### 📑 Page Summary: ${textRes.title}\n\n**URL**: ${textRes.url}\n\n**Key Highlights**:\n` +
           lines.map(l => `- ${l}`).join('\n') +
           `\n\n*(Tip: Connect the Local Engine for full multi-step desktop & multi-tab control)*`);
       } else {
@@ -284,23 +441,23 @@ document.addEventListener('DOMContentLoaded', () => {
     } else if (lower.includes('label') || lower.includes('highlight') || lower.includes('buttons')) {
       if (!tab?.id) return;
       const res = await chrome.tabs.sendMessage(tab.id, { action: 'LABEL_INTERACTIVE' });
-      appendAgentMessage(`🎯 Labeled **${res.labeledCount || 0}** interactive elements directly on the active webpage. You can inspect element numbers or instruct me to click any of them.`);
+      appendAgentMessage(`🎯 Labeled **${res.labeledCount || 0}** interactive elements directly on the active webpage.`);
     } else if (lower.includes('click')) {
       const words = lower.replace('click', '').trim();
       const res = await chrome.tabs.sendMessage(tab.id, { action: 'CLICK_ELEMENT', target: words });
       appendAgentMessage(`✓ Clicked element matching "${words}". Tag: ${res.tagName}, Text: "${res.text}"`);
     } else if (lower.includes('screenshot') || lower.includes('capture')) {
-      const snap = await chrome.runtime.sendMessage({ action: 'DIRECT_BROWSER_ACTION', browserCommand: 'capture_screenshot' });
-      appendAgentMessage(`📸 Tab screenshot captured successfully. View preview attached in conversation.`);
+      await chrome.runtime.sendMessage({ action: 'DIRECT_BROWSER_ACTION', browserCommand: 'capture_screenshot' });
+      appendAgentMessage(`📸 Tab screenshot captured successfully.`);
     } else {
-      appendAgentMessage(`💡 **Instruction Received**: "${prompt}"\n\nTo unleash deep multi-step computer automation (filesystem editing, terminal commands, test runners, and multi-tab workflows), please start the **Local Agent Engine** using:\n\`npm run start:engine\`\n\nStatus: Local engine is currently connecting or offline.`);
+      appendAgentMessage(`💡 **Instruction Received**: "${prompt}"\n\nTo unlock deep multi-step automation (filesystem editing, terminal commands, test runners, and multi-tab workflows), please start the **Local Agent Engine**:\n\`npm run start:engine\``);
     }
 
     hideAgentStatus();
     isProcessing = false;
   }
 
-  // --- 5. Approvals & Security System ---
+  // --- 5. Approvals & Security System (Phase Ten) ---
 
   function handleNewApproval(req) {
     const { approvalId, actionType, tool, details, riskLevel } = req;
@@ -319,13 +476,25 @@ document.addEventListener('DOMContentLoaded', () => {
     card.className = 'agy-approval-card';
     card.id = `approval-${approvalId}`;
 
+    let previewContent = '';
+    if (details.content !== undefined) {
+      previewContent = `<pre class="agy-approval-details" style="max-height:120px;color:#A7F3D0;">${escapeHtml(details.content)}</pre>`;
+    } else if (details.targetContent !== undefined) {
+      previewContent = `<div style="font-size:10.5px;color:#9CA3AF;margin-top:4px;">Replacing:</div>
+      <pre class="agy-approval-details" style="color:#FCA5A5;">${escapeHtml(details.targetContent)}</pre>
+      <div style="font-size:10.5px;color:#9CA3AF;">With:</div>
+      <pre class="agy-approval-details" style="color:#A7F3D0;">${escapeHtml(details.replacementContent)}</pre>`;
+    } else {
+      previewContent = `<pre class="agy-approval-details">${escapeHtml(JSON.stringify(details, null, 2))}</pre>`;
+    }
+
     card.innerHTML = `
       <div class="agy-approval-header">
         <span class="agy-risk-badge ${riskLevel || 'medium'}">${(riskLevel || 'MEDIUM')} RISK</span>
         <span style="font-size:11px;color:#9CA3AF;">${tool}</span>
       </div>
-      <div style="font-size:12px;font-weight:600;color:#FFF;">${actionType}</div>
-      <pre class="agy-approval-details">${escapeHtml(JSON.stringify(details, null, 2))}</pre>
+      <div style="font-size:12px;font-weight:600;color:#FFF;margin-top:2px;">${actionType}</div>
+      ${previewContent}
       <div class="agy-approval-actions">
         <button class="agy-btn-approve" data-id="${approvalId}">Authorize Action</button>
         <button class="agy-btn-deny" data-id="${approvalId}">Deny</button>
@@ -343,7 +512,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     approvalsList.prepend(card);
-    speakTextIfEnabled('Security approval required for action.');
+    speakTextIfEnabled('Security approval required.');
   }
 
   function resolveApproval(approvalId, approved) {
@@ -371,7 +540,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // --- 6. Emergency Stop ---
+  // --- 6. Emergency Stop (Phase Eleven) ---
 
   function triggerEmergencyStop() {
     console.warn('[Antigravity] EMERGENCY STOP TRIGGERED BY USER');
@@ -389,12 +558,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     hideAgentStatus();
     isProcessing = false;
-    appendSystemNotice('🛑 EMERGENCY STOP ACTIVATED. All agent operations, child terminal processes, and browser automations have been halted.');
+    appendSystemNotice('🛑 EMERGENCY STOP ACTIVATED. All agent operations, child terminal processes, and automations halted.');
+    recordMessage({ type: 'system', content: '🛑 EMERGENCY STOP ACTIVATED.' });
     addAuditEntry('EMERGENCY_STOP', 'EXECUTED', { triggeredBy: 'user' });
     speakTextIfEnabled('Emergency stop activated.');
   }
 
-  // --- 7. Voice Dictation (Web Speech API) ---
+  // --- 7. Voice Dictation (Phase Fourteen) ---
 
   if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
     const SpeechClass = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -458,9 +628,14 @@ document.addEventListener('DOMContentLoaded', () => {
     window.speechSynthesis.speak(utter);
   }
 
-  // --- 8. UI Rendering Helpers ---
+  // --- 8. UI Rendering Helpers & DOM Creators ---
 
   function appendUserMessage(text, screenshot = null) {
+    appendUserMessageDom(text, screenshot);
+    recordMessage({ type: 'user', content: text, screenshot });
+  }
+
+  function appendUserMessageDom(text, screenshot = null) {
     const msg = document.createElement('div');
     msg.className = 'agy-msg user';
     let content = `<div class="agy-msg-bubble">${escapeHtml(text)}`;
@@ -474,6 +649,11 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function appendAgentMessage(text) {
+    appendAgentMessageDom(text);
+    recordMessage({ type: 'agent', content: text });
+  }
+
+  function appendAgentMessageDom(text) {
     const msg = document.createElement('div');
     msg.className = 'agy-msg agent';
     msg.innerHTML = `<div class="agy-msg-bubble">${formatMarkdown(text)}</div>`;
@@ -497,6 +677,11 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderAgentThought(thought) {
+    renderAgentThoughtDom(thought);
+    recordMessage({ type: 'thought', content: thought });
+  }
+
+  function renderAgentThoughtDom(thought) {
     const card = document.createElement('div');
     card.className = 'agy-step-card';
     card.style.borderLeftColor = '#7928CA';
@@ -511,6 +696,11 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderToolStep(tool, params) {
+    renderToolStepDom(tool, params);
+    recordMessage({ type: 'tool_step', tool, params });
+  }
+
+  function renderToolStepDom(tool, params) {
     const card = document.createElement('div');
     card.className = 'agy-step-card';
     card.id = `step-${Date.now()}`;
@@ -526,6 +716,11 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderToolResult(tool, result, error) {
+    renderToolResultDom(tool, result, error);
+    recordMessage({ type: 'tool_result', tool, result, error });
+  }
+
+  function renderToolResultDom(tool, result, error) {
     const lastCard = chatMessages.querySelector('.agy-step-card:last-child');
     if (lastCard) {
       const spinner = lastCard.querySelector('.agy-spinner');
@@ -541,6 +736,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function appendSystemNotice(notice) {
+    appendSystemNoticeDom(notice);
+  }
+
+  function appendSystemNoticeDom(notice) {
     const noticeEl = document.createElement('div');
     noticeEl.style.fontSize = '11px';
     noticeEl.style.color = '#9CA3AF';
@@ -567,7 +766,7 @@ document.addEventListener('DOMContentLoaded', () => {
     chatMessages.scrollTop = chatMessages.scrollHeight;
   }
 
-  // --- 9. Audit Logging View ---
+  // --- 9. Audit Logging (Phase Twelve) ---
 
   function addAuditEntry(action, status, details) {
     const emptyState = auditList.querySelector('.agy-empty-state');
@@ -587,7 +786,52 @@ document.addEventListener('DOMContentLoaded', () => {
     auditList.prepend(item);
   }
 
-  clearAuditBtn.addEventListener('click', () => {
+  async function fetchAuditEntries() {
+    chrome.storage.local.get(['enginePort', 'authToken'], async (res) => {
+      const port = res.enginePort || 3721;
+      const token = res.authToken || '';
+      try {
+        const resp = await fetch(`http://127.0.0.1:${port}/audit?limit=40`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.entries && data.entries.length > 0) {
+            auditList.innerHTML = '';
+            data.entries.forEach(entry => {
+              const item = document.createElement('div');
+              item.className = 'agy-audit-item';
+              item.innerHTML = `
+                <div class="agy-audit-top">
+                  <span class="agy-audit-type">${entry.action} ${entry.tool ? `(${entry.tool})` : ''}</span>
+                  <span class="agy-audit-time">${new Date(entry.timestamp).toLocaleTimeString()}</span>
+                </div>
+                <div class="agy-audit-desc">Status: <strong>${entry.status}</strong> | Risk: ${entry.riskLevel}</div>
+                <pre class="agy-step-details">${escapeHtml(JSON.stringify(entry.params || entry.result || entry.error || {}, null, 2))}</pre>
+              `;
+              auditList.appendChild(item);
+            });
+          }
+        }
+      } catch (e) {}
+    });
+  }
+
+  refreshAuditBtn.addEventListener('click', fetchAuditEntries);
+
+  clearAuditBtn.addEventListener('click', async () => {
+    chrome.storage.local.get(['enginePort', 'authToken'], async (res) => {
+      const port = res.enginePort || 3721;
+      const token = res.authToken || '';
+      try {
+        await fetch(`http://127.0.0.1:${port}/audit/clear`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ operator: 'extension-user' })
+        });
+      } catch (e) {}
+    });
+
     auditList.innerHTML = `
       <div class="agy-empty-state">
         <div class="agy-shield-icon">📜</div>
@@ -596,7 +840,114 @@ document.addEventListener('DOMContentLoaded', () => {
     `;
   });
 
-  // --- 10. Engine Health & Status Management ---
+  // --- 10. Workspaces & Provider Health Management (Phase Six & Four) ---
+
+  async function loadWorkspaces() {
+    chrome.storage.local.get(['enginePort', 'authToken'], async (res) => {
+      const port = res.enginePort || 3721;
+      const token = res.authToken || '';
+      try {
+        const resp = await fetch(`http://127.0.0.1:${port}/workspaces`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          renderWorkspaces(data.workspaces || []);
+        } else {
+          workspacesList.innerHTML = `<div style="font-size:11px;color:#9CA3AF;padding:4px;">Start local engine to manage workspaces.</div>`;
+        }
+      } catch (e) {
+        workspacesList.innerHTML = `<div style="font-size:11px;color:#9CA3AF;padding:4px;">Offline. Start engine to view workspaces.</div>`;
+      }
+    });
+  }
+
+  function renderWorkspaces(workspaces) {
+    workspacesList.innerHTML = '';
+    if (!workspaces || workspaces.length === 0) {
+      workspacesList.innerHTML = `<div style="font-size:11px;color:#9CA3AF;padding:4px;">No approved workspaces configured.</div>`;
+      return;
+    }
+
+    workspaces.forEach(wsPath => {
+      const item = document.createElement('div');
+      item.className = 'agy-workspace-item';
+      item.innerHTML = `
+        <span class="agy-workspace-path" title="${escapeHtml(wsPath)}">${escapeHtml(wsPath)}</span>
+        <button class="agy-workspace-del" title="Remove workspace scope">&times;</button>
+      `;
+      item.querySelector('.agy-workspace-del').addEventListener('click', async () => {
+        chrome.storage.local.get(['enginePort', 'authToken'], async (res) => {
+          const port = res.enginePort || 3721;
+          const token = res.authToken || '';
+          try {
+            await fetch(`http://127.0.0.1:${port}/workspaces`, {
+              method: 'DELETE',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ path: wsPath })
+            });
+            loadWorkspaces();
+          } catch (e) {}
+        });
+      });
+      workspacesList.appendChild(item);
+    });
+  }
+
+  btnAddWorkspace.addEventListener('click', async () => {
+    const newPath = inputNewWorkspace.value.trim();
+    if (!newPath) return;
+
+    chrome.storage.local.get(['enginePort', 'authToken'], async (res) => {
+      const port = res.enginePort || 3721;
+      const token = res.authToken || '';
+      try {
+        const resp = await fetch(`http://127.0.0.1:${port}/workspaces`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ path: newPath })
+        });
+        if (resp.ok) {
+          inputNewWorkspace.value = '';
+          loadWorkspaces();
+        } else {
+          const err = await resp.json();
+          alert(`Could not add workspace: ${err.error}`);
+        }
+      } catch (e) {
+        alert(`Failed to add workspace: ${e.message}`);
+      }
+    });
+  });
+
+  async function checkProviderHealth() {
+    chrome.storage.local.get(['enginePort', 'authToken'], async (res) => {
+      const port = res.enginePort || 3721;
+      const token = res.authToken || '';
+      try {
+        const resp = await fetch(`http://127.0.0.1:${port}/providers`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          const p = data.providers || {};
+          providerHealthBadge.innerHTML = `
+            <div><strong>Gemini:</strong> ${p.gemini?.configured ? '<span style="color:#00E676;">Configured</span>' : '<span style="color:#9CA3AF;">Missing Key</span>'}</div>
+            <div><strong>Claude:</strong> ${p.anthropic?.configured ? '<span style="color:#00E676;">Configured</span>' : '<span style="color:#9CA3AF;">Missing Key</span>'}</div>
+            <div><strong>OpenAI:</strong> ${p.openai?.configured ? '<span style="color:#00E676;">Configured</span>' : '<span style="color:#9CA3AF;">Missing Key</span>'}</div>
+            <div><strong>Ollama:</strong> ${p.ollama?.healthy ? '<span style="color:#00E676;">Online (' + p.ollama.model + ')</span>' : '<span style="color:#FF2E63;">Offline</span>'}</div>
+            <div><strong>Autonomous Engine:</strong> <span style="color:#00F2FE;">Ready (Built-in)</span></div>
+          `;
+        } else {
+          providerHealthBadge.innerHTML = `<span style="color:#9CA3AF;">Connect to Local Engine to inspect provider status.</span>`;
+        }
+      } catch (e) {
+        providerHealthBadge.innerHTML = `<span style="color:#9CA3AF;">Local Engine offline.</span>`;
+      }
+    });
+  }
+
+  // --- 11. Engine Health & Status Management ---
 
   function checkEngineStatus() {
     chrome.runtime.sendMessage({ action: 'GET_ENGINE_STATUS' }, (res) => {
@@ -629,13 +980,14 @@ document.addEventListener('DOMContentLoaded', () => {
     refreshActiveTabContext();
   });
 
-  // --- 11. Settings Storage ---
+  // --- 12. Settings Storage ---
 
   function loadSettings() {
     chrome.storage.local.get([
       'enginePort',
       'authToken',
       'selectedProvider',
+      'hybridRoutingPolicy',
       'geminiKey',
       'anthropicKey',
       'openAiKey',
@@ -648,6 +1000,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const provider = res.selectedProvider || 'hybrid';
       settingProvider.value = provider;
       modelSelect.value = provider;
+      if (res.hybridRoutingPolicy) settingRoutingPolicy.value = res.hybridRoutingPolicy;
       if (res.geminiKey) settingGeminiKey.value = res.geminiKey;
       if (res.anthropicKey) settingAnthropicKey.value = res.anthropicKey;
       if (res.openAiKey) settingOpenAiKey.value = res.openAiKey;
@@ -667,6 +1020,7 @@ document.addEventListener('DOMContentLoaded', () => {
       enginePort: port,
       authToken: settingAuthToken.value.trim(),
       selectedProvider: settingProvider.value,
+      hybridRoutingPolicy: settingRoutingPolicy.value,
       geminiKey: settingGeminiKey.value.trim(),
       anthropicKey: settingAnthropicKey.value.trim(),
       openAiKey: settingOpenAiKey.value.trim(),
@@ -679,6 +1033,7 @@ document.addEventListener('DOMContentLoaded', () => {
       settingsSavedHint.style.display = 'block';
       setTimeout(() => { settingsSavedHint.style.display = 'none'; }, 2500);
       chrome.runtime.sendMessage({ action: 'RECONNECT_ENGINE' });
+      checkProviderHealth();
     });
   });
 
@@ -699,6 +1054,7 @@ document.addEventListener('DOMContentLoaded', () => {
       .replace(/## (.*?)(\n|$)/g, '<h3 style="color:#00F2FE;margin:8px 0;">$1</h3>')
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
       .replace(/\*(.*?)\*/g, '<em>$1</em>')
+      .replace(/```([\s\S]*?)```/g, '<pre style="background:rgba(0,0,0,0.5);padding:6px;border-radius:4px;overflow-x:auto;color:#E2E8F0;font-size:11px;">$1</pre>')
       .replace(/`([^`]+)`/g, '<code style="background:rgba(0,0,0,0.4);padding:1px 4px;border-radius:3px;color:#00F2FE;">$1</code>')
       .replace(/\n/g, '<br>');
   }

@@ -56,9 +56,27 @@ class BrowserTool {
     });
   }
 
+  validateUrl(url) {
+    if (!url || typeof url !== 'string') {
+      throw new Error('Valid URL string is required');
+    }
+    const trimmed = url.trim().toLowerCase();
+    if (trimmed.startsWith('javascript:') || trimmed.startsWith('data:') || trimmed.startsWith('vbscript:')) {
+      throw new Error(`Dangerous URL scheme blocked by security policy: "${url}"`);
+    }
+    if (trimmed.startsWith('chrome://') || trimmed.startsWith('brave://') || trimmed.startsWith('edge://')) {
+      throw new Error(`Browser internal management page blocked: "${url}"`);
+    }
+    if (trimmed.startsWith('file:///')) {
+      throw new Error(`Direct browser local file access blocked: "${url}"`);
+    }
+    return url.trim();
+  }
+
   // Individual convenience methods
   async openTab({ url, active = true }) {
-    return this.execute('open_tab', { url, active });
+    const validUrl = this.validateUrl(url);
+    return this.execute('open_tab', { url: validUrl, active });
   }
 
   async closeTab({ tabId }) {
@@ -74,7 +92,8 @@ class BrowserTool {
   }
 
   async navigate({ url, tabId = null }) {
-    return this.execute('navigate', { url, tabId });
+    const validUrl = this.validateUrl(url);
+    return this.execute('navigate', { url: validUrl, tabId });
   }
 
   async clickElement({ target, options = {} }) {

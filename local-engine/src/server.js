@@ -15,6 +15,8 @@ const EmergencyCoordinator = require('./security/emergency');
 const ToolRegistry = require('./tools');
 const MemoryManager = require('./agent/memory');
 const AgentOrchestrator = require('./agent/orchestrator');
+const { HybridRouter } = require('./agent/providers');
+const OllamaProvider = require('./agent/providers/ollama');
 
 const crypto = require('crypto');
 
@@ -39,6 +41,11 @@ try {
 
 const PORT = parseInt(process.env.ENGINE_PORT || config.port, 10) || 3721;
 const HOST = process.env.ENGINE_HOST || config.host || '127.0.0.1';
+
+// Verify loopback isolation (Security Phase 9.1)
+if (HOST !== '127.0.0.1' && HOST !== 'localhost') {
+  console.warn(`\n⚠️  [SECURITY WARNING] Local Engine is bound to non-loopback host "${HOST}". Ensure network isolation.`);
+}
 
 // Token setup: use configured token, or generate secure random token if empty
 let AUTH_TOKEN = (process.env.ENGINE_AUTH_TOKEN || config.authToken || '').trim();
@@ -71,7 +78,7 @@ const orchestrator = new AgentOrchestrator(toolRegistry, memoryManager, config);
 // Initialize Express App
 const app = express();
 
-// Restrict CORS strictly to extension origins and local loopback
+// Restrict CORS strictly to extension origins and local loopback (Phase 9.6)
 const allowedOriginPatterns = [
   /^chrome-extension:\/\//,
   /^moz-extension:\/\//,
@@ -92,7 +99,7 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 
 // Token Authentication Middleware for HTTP
 function authenticateHttp(req, res, next) {
@@ -107,7 +114,7 @@ function authenticateHttp(req, res, next) {
 }
 
 // REST Endpoints
-// Unauthenticated Health: minimized info to prevent reconnaissance
+// Unauthenticated Health: minimized info to prevent reconnaissance (Phase 9.5)
 app.get('/health', (req, res) => {
   res.json({
     status: 'ONLINE',
@@ -123,17 +130,98 @@ app.get('/engine-info', authenticateHttp, (req, res) => {
     port: PORT,
     host: HOST,
     extensionConnected: extensionClient !== null && extensionClient.readyState === 1,
-    approvedDirectories: permissionManager.approvedDirectories,
+    approvedDirectories: permissionManager.getApprovedDirectories(),
     toolsCount: toolRegistry.tools.size,
-    activeProvider: config.activeProvider || 'hybrid'
+    activeProvider: config.activeProvider || 'hybrid',
+    hybridRoutingPolicy: config.hybridRoutingPolicy || 'balanced'
   });
 });
 
+// Workspaces management (Phase 10.2)
+app.get('/workspaces', authenticateHttp, (req, res) => {
+  res.json({
+    workspaces: permissionManager.getApprovedDirectories()
+  });
+});
+
+app.post('/workspaces', authenticateHttp, (req, res) => {
+  const { path: dirPath } = req.body;
+  if (!dirPath) return res.status(400).json({ error: 'Directory path is required' });
+  try {
+    const added = permissionManager.addApprovedDirectory(dirPath);
+    auditLogger.log({
+      action: 'WORKSPACE_SCOPE_EXPANDED',
+      status: 'APPROVED',
+      riskLevel: 'high',
+      params: { directory: added }
+    });
+    res.json({ success: true, added, workspaces: permissionManager.getApprovedDirectories() });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/workspaces', authenticateHttp, (req, res) => {
+  const { path: dirPath } = req.body;
+  if (!dirPath) return res.status(400).json({ error: 'Directory path is required' });
+  try {
+    const removed = permissionManager.removeApprovedDirectory(dirPath);
+    auditLogger.log({
+      action: 'WORKSPACE_SCOPE_REDUCED',
+      status: 'APPROVED',
+      riskLevel: 'medium',
+      params: { directory: dirPath, removed }
+    });
+    res.json({ success: true, removed, workspaces: permissionManager.getApprovedDirectories() });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Provider Status Check (without revealing secrets)
+app.get('/providers', authenticateHttp, async (req, res) => {
+  try {
+    const router = new HybridRouter(config);
+    const availability = router.getProviderAvailability(config);
+
+    const ollama = new OllamaProvider(availability.ollama.baseUrl, availability.ollama.model);
+    const ollamaHealth = await ollama.checkHealth(1200);
+
+    res.json({
+      activeProvider: config.activeProvider || 'hybrid',
+      routingPolicy: config.hybridRoutingPolicy || 'balanced',
+      providers: {
+        gemini: { configured: availability.gemini.available, model: availability.gemini.model },
+        anthropic: { configured: availability.anthropic.available, model: availability.anthropic.model },
+        openai: { configured: availability.openai.available, model: availability.openai.model },
+        ollama: {
+          configured: true,
+          baseUrl: availability.ollama.baseUrl,
+          model: availability.ollama.model,
+          healthy: ollamaHealth.healthy,
+          hasModel: ollamaHealth.hasConfiguredModel || false,
+          error: ollamaHealth.error || null
+        },
+        autonomous: { configured: true, model: 'deterministic-rules' }
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Audit retrieval
 app.get('/audit', authenticateHttp, (req, res) => {
   const limit = parseInt(req.query.limit, 10) || 50;
   res.json({
     entries: auditLogger.getRecentEntries(limit)
   });
+});
+
+// Audit clear with audit record
+app.post('/audit/clear', authenticateHttp, (req, res) => {
+  const entry = auditLogger.clearLog(req.body.operator || 'user');
+  res.json({ success: true, cleared: true, entry });
 });
 
 app.post('/emergency-stop', authenticateHttp, async (req, res) => {
@@ -164,22 +252,25 @@ app.post('/task', authenticateHttp, async (req, res) => {
 
 // Create HTTP Server & WebSocket Server
 const server = http.createServer(app);
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 });
 
-// WebSocket Upgrade & Authentication
+// WebSocket Upgrade & Authentication (Supports both query token and handshake message per Phase 9.4)
 server.on('upgrade', (request, socket, head) => {
   try {
     const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
     const token = url.searchParams.get('token');
 
-    if (token !== AUTH_TOKEN) {
+    // If query token provided and incorrect, reject
+    if (token && token !== AUTH_TOKEN) {
       console.warn(`[Server] Rejected unauthorized WS connection from ${request.socket.remoteAddress}`);
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;
     }
 
+    // Upgrade socket
     wss.handleUpgrade(request, socket, head, (ws) => {
+      ws.__authenticated = (token === AUTH_TOKEN);
       wss.emit('connection', ws, request);
     });
   } catch (err) {
@@ -191,21 +282,60 @@ server.on('upgrade', (request, socket, head) => {
 wss.on('connection', (ws, req) => {
   console.log(`[Server] Antigravity Extension connected from ${req.socket.remoteAddress}`);
 
-  // Set as active extension bridge
-  extensionClient = ws;
-
-  ws.send(JSON.stringify({
-    type: 'ENGINE_STATUS',
-    connected: true,
-    port: PORT,
-    message: 'Connected to Antigravity Local Agent Engine'
-  }));
-
   let currentTaskAbort = null;
+  let handshakeTimer = null;
+
+  // If not authenticated via query token, require AUTH_HANDSHAKE within 5 seconds
+  if (!ws.__authenticated) {
+    handshakeTimer = setTimeout(() => {
+      if (!ws.__authenticated) {
+        console.warn('[Server] WS connection timed out waiting for authentication handshake');
+        ws.close(4001, 'Authentication handshake timeout');
+      }
+    }, 5000);
+  } else {
+    extensionClient = ws;
+    ws.send(JSON.stringify({
+      type: 'ENGINE_STATUS',
+      connected: true,
+      port: PORT,
+      message: 'Connected to Antigravity Local Agent Engine'
+    }));
+  }
 
   ws.on('message', async (data) => {
     try {
+      if (data.length > 2 * 1024 * 1024) {
+        ws.send(JSON.stringify({ type: 'ERROR', error: 'Payload too large (max 2MB)' }));
+        return;
+      }
+
       const msg = JSON.parse(data.toString());
+
+      // Handle Handshake Authentication Message
+      if (msg.type === 'AUTH_HANDSHAKE') {
+        if (msg.token === AUTH_TOKEN) {
+          ws.__authenticated = true;
+          extensionClient = ws;
+          if (handshakeTimer) clearTimeout(handshakeTimer);
+          ws.send(JSON.stringify({
+            type: 'ENGINE_STATUS',
+            connected: true,
+            port: PORT,
+            message: 'Authentication successful. Connected to Local Agent Engine.'
+          }));
+        } else {
+          ws.send(JSON.stringify({ type: 'AUTH_FAILED', error: 'Invalid security token' }));
+          ws.close(4003, 'Invalid token');
+        }
+        return;
+      }
+
+      // Block all other messages if unauthenticated
+      if (!ws.__authenticated) {
+        ws.send(JSON.stringify({ type: 'AUTH_REQUIRED', error: 'Authentication required' }));
+        return;
+      }
 
       switch (msg.type) {
         case 'CLIENT_REGISTER':
@@ -273,6 +403,7 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
+    if (handshakeTimer) clearTimeout(handshakeTimer);
     console.log('[Server] Extension client disconnected');
     if (extensionClient === ws) {
       extensionClient = null;
@@ -284,6 +415,7 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('error', (err) => {
+    if (handshakeTimer) clearTimeout(handshakeTimer);
     console.error('[Server] WS Error:', err);
   });
 });
@@ -298,8 +430,9 @@ server.listen(PORT, HOST, () => {
    Port:            ${PORT}
    WebSocket:       ws://${HOST}:${PORT}?token=***
    Health Endpoint: http://${HOST}:${PORT}/health
-   Approved Scope:  ${permissionManager.approvedDirectories.join(', ')}
+   Approved Scope:  ${permissionManager.getApprovedDirectories().join(', ')}
    Active Provider: ${config.activeProvider || 'hybrid'}
+   Routing Policy:  ${config.hybridRoutingPolicy || 'balanced'}
 ==========================================================
 `);
 });

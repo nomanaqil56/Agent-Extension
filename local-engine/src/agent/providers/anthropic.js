@@ -2,8 +2,18 @@
 
 class AnthropicProvider {
   constructor(apiKey, model = 'claude-3-5-sonnet-20241022') {
+    this.name = 'anthropic';
     this.apiKey = apiKey;
-    this.model = model;
+    this.model = model || 'claude-3-5-sonnet-20241022';
+    this.supportsTools = true;
+    this.supportsStreaming = false;
+  }
+
+  async checkHealth() {
+    if (!this.apiKey) {
+      return { healthy: false, error: 'Anthropic API Key missing' };
+    }
+    return { healthy: true, model: this.model, provider: 'anthropic' };
   }
 
   async generateStep(messages, tools = []) {

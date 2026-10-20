@@ -2,8 +2,18 @@
 
 class OpenAIProvider {
   constructor(apiKey, model = 'gpt-4o') {
+    this.name = 'openai';
     this.apiKey = apiKey;
-    this.model = model;
+    this.model = model || 'gpt-4o';
+    this.supportsTools = true;
+    this.supportsStreaming = false;
+  }
+
+  async checkHealth() {
+    if (!this.apiKey) {
+      return { healthy: false, error: 'OpenAI API Key missing' };
+    }
+    return { healthy: true, model: this.model, provider: 'openai' };
   }
 
   async generateStep(messages, tools = []) {
@@ -54,7 +64,9 @@ class OpenAIProvider {
       const call = msg.tool_calls[0];
       let args = {};
       try {
-        args = JSON.parse(call.function.arguments);
+        args = typeof call.function.arguments === 'string'
+          ? JSON.parse(call.function.arguments)
+          : (call.function.arguments || {});
       } catch (e) {}
 
       return {

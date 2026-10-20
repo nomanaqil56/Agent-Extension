@@ -96,9 +96,29 @@
 
       <!-- 1. CHAT VIEW -->
       <section id="chat-view" class="agy-view active">
+        <!-- Persistent Conversation Controls Bar -->
+        <div class="agy-conversation-bar">
+          <div class="agy-conv-left">
+            <button id="btn-new-chat" class="agy-mini-btn" title="Start a fresh conversation">
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+              New Task
+            </button>
+            <select id="conversation-select" class="agy-select-compact" title="Switch conversation"></select>
+          </div>
+          <button id="btn-clear-chat" class="agy-icon-btn-compact" title="Clear current conversation messages">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="3 6 5 6 21 6"></polyline>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            </svg>
+          </button>
+        </div>
+
         <!-- Message Feed -->
         <div id="chat-messages" class="agy-message-list">
-          <div class="agy-welcome-card">
+          <div class="agy-welcome-card" id="welcome-card">
             <div class="agy-welcome-icon">⚡</div>
             <h3>Antigravity Command Center</h3>
             <p>Your browser and desktop agent. Control tabs, navigate web pages, read local code, execute terminal commands, and automate workflows.</p>
@@ -188,7 +208,10 @@
               <h2>Audit Log</h2>
               <p>Chronological trace of all actions executed by the agent.</p>
             </div>
-            <button id="clear-audit-btn" class="agy-small-btn">Clear</button>
+            <div class="agy-btn-row">
+              <button id="refresh-audit-btn" class="agy-small-btn">Refresh</button>
+              <button id="clear-audit-btn" class="agy-small-btn">Clear</button>
+            </div>
           </div>
         </div>
 
@@ -232,6 +255,28 @@
           </div>
 
           <div class="agy-form-group">
+            <label>Hybrid Routing Policy</label>
+            <select id="setting-routing-policy" class="agy-select full-width">
+              <option value="balanced" selected>Balanced (Smart Escalation to Cloud for Complex Tasks)</option>
+              <option value="privacy-first">Privacy-First (Strict Local/Offline Isolation for Code & Files)</option>
+              <option value="cloud-preferred">Cloud-Preferred (Prioritize Cloud LLMs)</option>
+              <option value="manual">Manual (Strictly follow selected provider)</option>
+            </select>
+          </div>
+
+          <!-- Approved Workspaces Directory Management -->
+          <div class="agy-form-group">
+            <label>Approved Workspaces (Local Filesystem Scope)</label>
+            <div id="workspaces-list" class="agy-workspaces-box">
+              <div style="font-size:11px;color:#9CA3AF;padding:4px;">Loading approved workspaces...</div>
+            </div>
+            <div class="agy-add-workspace-row">
+              <input type="text" id="input-new-workspace" class="agy-input" placeholder="Add path (e.g. D:\Coding\Project)">
+              <button id="btn-add-workspace" class="agy-small-btn" style="white-space:nowrap;">+ Add</button>
+            </div>
+          </div>
+
+          <div class="agy-form-group">
             <label>Google Gemini API Key</label>
             <input type="password" id="setting-gemini-key" class="agy-input" placeholder="AIzaSy...">
           </div>
@@ -256,6 +301,14 @@
               <input type="checkbox" id="setting-audio-feedback" checked>
               <span>Enable voice audio feedback (Speech Synthesis)</span>
             </label>
+          </div>
+
+          <!-- Provider Connectivity Diagnostic Card -->
+          <div class="agy-form-group">
+            <label>Provider Live Status</label>
+            <div id="provider-health-badge" class="agy-health-card">
+              <span style="font-size:11px;color:#9CA3AF;">Checking provider connectivity...</span>
+            </div>
           </div>
 
           <button id="save-settings-btn" class="agy-primary-btn">Save Settings</button>

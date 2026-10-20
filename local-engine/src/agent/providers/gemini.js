@@ -2,8 +2,18 @@
 
 class GeminiProvider {
   constructor(apiKey, model = 'gemini-2.0-flash') {
+    this.name = 'gemini';
     this.apiKey = apiKey;
-    this.model = model;
+    this.model = model || 'gemini-2.0-flash';
+    this.supportsTools = true;
+    this.supportsStreaming = false;
+  }
+
+  async checkHealth() {
+    if (!this.apiKey) {
+      return { healthy: false, error: 'Gemini API Key missing' };
+    }
+    return { healthy: true, model: this.model, provider: 'gemini' };
   }
 
   async generateStep(messages, tools = []) {

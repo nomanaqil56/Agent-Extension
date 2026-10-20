@@ -10,7 +10,7 @@ class TerminalTool {
     this.defaultTimeoutMs = defaultTimeoutMs;
   }
 
-  async executeCommand({ command, cwd = null, timeoutMs = null }) {
+  async executeCommand({ command, cwd = null, timeoutMs = null }, abortSignal = null) {
     if (!command || typeof command !== 'string') {
       throw new Error('Command string is required');
     }
@@ -40,6 +40,20 @@ class TerminalTool {
       // Register with Emergency Coordinator
       const pid = this.emergencyCoordinator.registerProcess(child, command);
 
+      // Handle AbortSignal cancellation propagation
+      let abortHandler = null;
+      if (abortSignal) {
+        if (abortSignal.aborted) {
+          this.emergencyCoordinator.killProcessTree(pid);
+          return reject(new Error('Command aborted before execution.'));
+        }
+        abortHandler = () => {
+          this.emergencyCoordinator.killProcessTree(pid);
+          reject(new Error(`Command cancelled by user abort or Emergency Stop: "${command}"`));
+        };
+        abortSignal.addEventListener('abort', abortHandler, { once: true });
+      }
+
       const timer = setTimeout(() => {
         timedOut = true;
         this.emergencyCoordinator.killProcessTree(pid);
@@ -62,12 +76,14 @@ class TerminalTool {
 
       child.on('error', (err) => {
         clearTimeout(timer);
+        if (abortSignal && abortHandler) abortSignal.removeEventListener('abort', abortHandler);
         this.emergencyCoordinator.unregisterProcess(pid);
         reject(new Error(`Failed to spawn command: ${err.message}`));
       });
 
       child.on('close', (exitCode) => {
         clearTimeout(timer);
+        if (abortSignal && abortHandler) abortSignal.removeEventListener('abort', abortHandler);
         this.emergencyCoordinator.unregisterProcess(pid);
 
         if (!timedOut) {

@@ -48,12 +48,21 @@ function connectToLocalEngine() {
     }
 
     try {
-      console.log(`[Antigravity] Connecting to Local Engine at ${wsUrl}...`);
+      console.log(`[Antigravity] Connecting to Local Engine at ws://127.0.0.1:${port}...`);
       localEngineWs = new WebSocket(wsUrl);
 
       localEngineWs.onopen = () => {
         console.log('[Antigravity] Connected to Local Agent Engine!');
         isConnectedToEngine = true;
+
+        // Send auth handshake message
+        if (token) {
+          localEngineWs.send(JSON.stringify({
+            type: 'AUTH_HANDSHAKE',
+            token
+          }));
+        }
+
         broadcastToExtensionViews({
           type: 'ENGINE_STATUS',
           connected: true,

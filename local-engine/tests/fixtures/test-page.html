@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Antigravity Browser Automation Fixture</title>
+  <style>
+    body { font-family: sans-serif; margin: 40px; background: #0F172A; color: #F8FAFC; }
+    h1 { color: #00F2FE; }
+    .card { background: #1E293B; border: 1px solid #334155; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+    button { background: #00F2FE; color: #0F172A; border: none; padding: 8px 16px; border-radius: 4px; font-weight: bold; cursor: pointer; }
+    input { background: #0F172A; border: 1px solid #475569; color: #FFF; padding: 8px; border-radius: 4px; width: 250px; }
+    .status { margin-top: 10px; font-weight: bold; color: #10B981; }
+  </style>
+</head>
+<body>
+  <h1>Antigravity Browser Automation Fixture</h1>
+  <p>Local test page for verifying element distillation, forms, clicks, and text extraction.</p>
+
+  <div class="card">
+    <h2>Interactive Form</h2>
+    <form id="test-form" onsubmit="event.preventDefault(); document.getElementById('form-status').textContent = 'Submitted: ' + document.getElementById('user-input').value;">
+      <label for="user-input">Search Query:</label><br>
+      <input type="text" id="user-input" name="query" placeholder="Enter search keywords..."><br><br>
+      <button type="submit" id="btn-submit">Submit Search</button>
+    </form>
+    <div id="form-status" class="status">Ready</div>
+  </div>
+
+  <div class="card">
+    <h2>Action Clicker</h2>
+    <button id="btn-counter" onclick="var c = document.getElementById('count'); c.textContent = parseInt(c.textContent, 10) + 1;">Click Me</button>
+    <p>Clicks: <span id="count">0</span></p>
+  </div>
+</body>
+</html>

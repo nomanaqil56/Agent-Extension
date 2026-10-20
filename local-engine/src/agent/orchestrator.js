@@ -1,6 +1,6 @@
 // Antigravity Local Agent Engine - ReAct Agent Orchestrator
 
-const { createProvider, FallbackAgentProvider } = require('./providers');
+const { createProvider, HybridRouter, FallbackAgentProvider } = require('./providers');
 const { SYSTEM_PROMPT } = require('./prompts');
 
 class AgentOrchestrator {
@@ -34,25 +34,31 @@ class AgentOrchestrator {
       return { success: false, aborted: true, summary: 'Task halted by Emergency Stop' };
     }
 
-    const { provider, activeProviderName, isFallback, fallbackReason } = createProvider(
+    const router = new HybridRouter(this.config);
+    const routed = router.routeTask({
+      task,
+      context,
       providerName,
-      this.config,
-      this.toolRegistry
-    );
+      config: this.config,
+      toolRegistry: this.toolRegistry
+    });
+    const { provider, activeProviderName, isFallback, fallbackReason, policy, model, reason } = routed;
 
-    // Report active provider and any fallback switch
+    // Report active provider, policy, and any fallback switch
     notify({
       type: 'PROVIDER_ACTIVE',
       provider: activeProviderName,
       requestedProvider: providerName,
+      policy: policy || 'balanced',
+      model: model || null,
       isFallback: Boolean(isFallback),
-      reason: fallbackReason || null
+      reason: reason || fallbackReason || null
     });
 
-    if (isFallback && fallbackReason) {
+    if (reason || (isFallback && fallbackReason)) {
       notify({
         type: 'AGENT_MESSAGE',
-        message: `ℹ️ ${fallbackReason}`
+        message: `ℹ️ ${reason || fallbackReason}`
       });
     }
 

@@ -49,9 +49,19 @@ check('Icon 128px exists', fs.existsSync(path.join(root, 'extension', 'icons', '
 console.log('\n[2] Checking Local Agent Engine:');
 check('Engine server.js exists', fs.existsSync(path.join(root, 'local-engine', 'src', 'server.js')));
 check('Engine config.json exists', fs.existsSync(path.join(root, 'local-engine', 'config.json')));
+
+if (fs.existsSync(path.join(root, 'local-engine', 'config.json'))) {
+  const cfg = JSON.parse(fs.readFileSync(path.join(root, 'local-engine', 'config.json'), 'utf8'));
+  check('File write requires approval by default in config', cfg.security?.requireApprovalForFileWrite === true);
+  check('Clipboard read requires approval by default in config', cfg.security?.requireApprovalForClipboardRead === true);
+  check('Host defaults to loopback 127.0.0.1', cfg.host === '127.0.0.1');
+}
+
 check('Engine node_modules exists', fs.existsSync(path.join(root, 'local-engine', 'node_modules')));
 check('Agent Orchestrator exists', fs.existsSync(path.join(root, 'local-engine', 'src', 'agent', 'orchestrator.js')));
-check('Fallback Provider exists', fs.existsSync(path.join(root, 'local-engine', 'src', 'agent', 'providers', 'fallback.js')));
+check('Hybrid Router exists', fs.existsSync(path.join(root, 'local-engine', 'src', 'agent', 'providers', 'router.js')));
+check('Ollama Provider exists', fs.existsSync(path.join(root, 'local-engine', 'src', 'agent', 'providers', 'ollama.js')));
+check('Autonomous Fallback Provider exists', fs.existsSync(path.join(root, 'local-engine', 'src', 'agent', 'providers', 'fallback.js')));
 check('Permission Manager exists', fs.existsSync(path.join(root, 'local-engine', 'src', 'security', 'permissions.js')));
 check('Emergency Coordinator exists', fs.existsSync(path.join(root, 'local-engine', 'src', 'security', 'emergency.js')));
 check('Audit Logger exists', fs.existsSync(path.join(root, 'local-engine', 'src', 'security', 'audit.js')));
@@ -60,7 +70,7 @@ check('Audit Logger exists', fs.existsSync(path.join(root, 'local-engine', 'src'
 console.log('\n[3] Running Automated Integration Tests:');
 try {
   execSync('npm test', { cwd: path.join(root, 'local-engine'), stdio: 'inherit' });
-  check('Unit & Integration Test Suite', true);
+  check('Unit & Integration Test Suite (25 Tests)', true);
 } catch (e) {
   check('Unit & Integration Test Suite', false, e.message);
 }
@@ -77,3 +87,7 @@ console.log(`
 ${allPassed ? '🎉 ALL CHECKS PASSED: Suite is 100% Ready!' : '⚠️ Some checks failed. See details above.'}
 =====================================================
 `);
+
+if (!allPassed) {
+  process.exit(1);
+}
