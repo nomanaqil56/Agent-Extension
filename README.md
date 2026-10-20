@@ -68,16 +68,16 @@ A unified AI side panel and computer-capable agent system built with a **Brave/C
 The application transparently routes between local and cloud providers based on your selected policy:
 
 - **Routing Policies**:
-  - **Balanced (Default)**: Handles simple local diagnostics and DOM distillation locally; escalates to cloud models (Gemini -> Claude -> GPT-4o) for complex multi-step reasoning.
-  - **Privacy-First**: Strict local-only isolation. Tasks touching local projects, filesystem files, or private code are strictly routed to local Ollama or the Built-in Autonomous Engine. Never sends local files to cloud APIs.
-  - **Cloud-Preferred**: Uses configured cloud models with transparent fallbacks.
-  - **Manual**: Strictly adheres to your selected provider and displays transparent diagnostics if credentials are missing.
+  - **Balanced (Default)**: Ordinary tasks (file listing, reading local code, system diagnostics, DOM inspection, and tab actions) stay strictly local on the Autonomous Engine or Ollama. Cloud escalation (Gemini -> Claude -> GPT-4o) occurs only when tasks require complex cognitive reasoning and cloud API keys are configured.
+  - **Privacy-First**: Strict local isolation. Local files, private code, and terminal outputs are strictly processed locally and are never transmitted to cloud providers. If local content is accessed during execution, the agent enforces a privacy boundary and switches execution to the local Autonomous Engine.
+  - **Cloud-Preferred**: Uses configured cloud models for general queries, falling back to local processing if cloud services are unavailable.
+  - **Manual**: Strictly adheres to your selected provider. If credentials are not configured, execution is blocked with a clear diagnostic message unless fallback is explicitly enabled.
 - **Supported Providers**:
   - **Google Gemini 2.0 Flash** (`GEMINI_API_KEY`)
   - **Anthropic Claude 3.5 Sonnet** (`ANTHROPIC_API_KEY`)
   - **OpenAI GPT-4o** (`OPENAI_API_KEY`)
   - **Ollama / Local LLM** (`http://localhost:11434`, e.g. `llama3.2`)
-  - **Autonomous Engine**: Deterministic zero-config offline reasoning engine requiring no API keys.
+  - **Autonomous Engine**: Deterministic zero-config offline reasoning engine requiring no external API keys.
 
 ---
 
@@ -100,6 +100,7 @@ Or via npm:
 npm run start:engine
 ```
 The engine starts on `127.0.0.1:3721` with health checks available at `http://127.0.0.1:3721/health`.
+Upon startup, an ephemeral **6-character Pairing Code** is displayed in the engine console banner (e.g. `Pairing Code: A1B2C3`).
 
 ### Step 3: Load the Extension into Brave or Chrome
 1. Open your browser and navigate to:
@@ -109,6 +110,14 @@ The engine starts on `127.0.0.1:3721` with health checks available at `http://12
 3. Click **"Load unpacked"**.
 4. Select the **`extension`** folder inside this project directory (`extension/`).
 5. Pin the **Antigravity AI Agent** icon to your browser toolbar!
+
+### Step 4: First-Run Pairing & Configuration
+1. Open the Antigravity Side Panel (`Alt+Shift+A`).
+2. Go to the **Settings Tab**.
+3. Under **Security Authentication Token**, enter the 6-character **Pairing Code** shown in your engine console and click **Pair Engine**.
+4. The extension securely retrieves the session token, handshakes over WebSocket without placing tokens in the URL, and displays `ONLINE :3721`.
+5. Enter your API keys and click **Save Settings** to synchronize them directly with the Local Engine.
+6. Under **Approved Workspaces**, approve at least one project directory to grant local filesystem and terminal access.
 
 ---
 
@@ -124,13 +133,13 @@ The engine starts on `127.0.0.1:3721` with health checks available at `http://12
 
 ## 🛠️ Testing & Verification
 
-Run the full diagnostic suite to verify that all extension components, security sandboxes, and execution tools are operating with 100% health:
+Run the verification suite to execute the automated unit, security, and WebSocket integration tests:
 
 ```bash
-# Run unit & security sandbox tests (25 automated tests)
+# Run unit & security sandbox tests (31 automated tests)
 npm run test:engine
 
-# Run End-to-End WebSocket simulation test
+# Run End-to-End WebSocket & Authentication test suite (5 tests)
 npm run test:e2e
 
 # Run complete diagnostic verification
@@ -176,11 +185,13 @@ The engine's access policy is configured in `local-engine/config.json`:
 
 ## 📋 Troubleshooting & FAQ
 
-- **Engine shows OFFLINE in the Side Panel**:
+- **Engine shows OFFLINE or AUTH FAILED in the Side Panel**:
   - Confirm the Local Agent Engine is running (`npm run start:engine`).
-  - Click the **OFFLINE** status pill in the top-right corner to initiate a reconnection.
+  - If `AUTH FAILED` is displayed, open the **Settings Tab**, enter the 6-character **Pairing Code** shown in your engine terminal, and click **Pair Engine**.
   - Verify your port in the Settings tab matches the port shown in your terminal (default: `3721`).
+- **No Approved Workspace Configured**:
+  - If all workspaces have been removed from the Settings tab, all filesystem and terminal execution tools are strictly locked down by the security sandbox. Enter a project folder path in Settings under **Approved Workspaces** and click **+ Add** to approve it.
 - **File Write or Command Execution Blocked**:
   - Check the **Approvals Tab** in the side panel. High-risk operations (such as file modifications or terminal scripts) require you to click **Authorize Action**.
 - **Model Key Missing**:
-  - Configure your `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` in the **Settings Tab** or `local-engine/.env`. Alternatively, use **Ollama** locally or the built-in **Autonomous Engine** for zero-config operation!
+  - Configure your `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` in the **Settings Tab** (which syncs directly to the Local Engine via authenticated `POST /config`) or `local-engine/.env`. Alternatively, use **Ollama** locally or the built-in **Autonomous Engine** for zero-config operation!

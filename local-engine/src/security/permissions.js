@@ -6,7 +6,7 @@ const fs = require('fs');
 class PermissionManager {
   constructor(config = {}) {
     this.config = config;
-    this.approvedDirectories = (config.approvedDirectories || [process.cwd()]).map(d => path.resolve(d));
+    this.approvedDirectories = (Array.isArray(config.approvedDirectories) ? config.approvedDirectories : [process.cwd()]).map(d => path.resolve(d));
     this.approvedApplications = new Set(
       (config.approvedApplications || ['code', 'notepad', 'calc', 'git']).map(a => a.toLowerCase())
     );
@@ -97,7 +97,12 @@ class PermissionManager {
     return canonical;
   }
 
-  // Remove an approved folder scope
+  // Check if at least one approved workspace directory is configured
+  isWorkspaceConfigured() {
+    return Array.isArray(this.approvedDirectories) && this.approvedDirectories.length > 0;
+  }
+
+  // Remove an approved folder scope (allows list to become empty without restoring process.cwd)
   removeApprovedDirectory(dirPath) {
     if (!dirPath || typeof dirPath !== 'string') return false;
     const canonical = this.canonicalizePath(path.resolve(dirPath)) || path.resolve(dirPath);
@@ -106,16 +111,13 @@ class PermissionManager {
       const isWin = process.platform === 'win32';
       return isWin ? d.toLowerCase() !== canonical.toLowerCase() : d !== canonical;
     });
-    // Ensure at least one directory remains
-    if (this.approvedDirectories.length === 0) {
-      this.approvedDirectories.push(process.cwd());
-    }
     return this.approvedDirectories.length < initialLength;
   }
 
   // Validate if a path falls within approved directories (including symlink resolution and traversal defense)
   isPathApproved(targetPath) {
     if (!targetPath || typeof targetPath !== 'string') return false;
+    if (!this.approvedDirectories || this.approvedDirectories.length === 0) return false;
 
     // Detect basic null bytes or malformed inputs
     if (targetPath.includes('\0')) return false;
@@ -137,6 +139,21 @@ class PermissionManager {
 
   // Analyze risk level for any requested tool action
   analyzeActionRisk(tool, params = {}) {
+    // If tool accesses local filesystem or workspace, enforce that at least one workspace is configured
+    const workspaceTools = [
+      'list_files', 'search_files', 'read_file', 'file_info',
+      'write_file', 'patch_file', 'delete_file', 'execute_command'
+    ];
+    if (workspaceTools.includes(tool) && !this.isWorkspaceConfigured()) {
+      return {
+        allowed: false,
+        needsApproval: false,
+        blocked: true,
+        riskLevel: 'forbidden',
+        reason: 'No approved workspace directory is configured. Please approve a workspace in Settings before accessing local files or terminal.'
+      };
+    }
+
     switch (tool) {
       // Safe Browser Operations & Telemetry
       case 'browser_distill_dom':

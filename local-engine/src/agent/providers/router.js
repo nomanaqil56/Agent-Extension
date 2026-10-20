@@ -32,16 +32,17 @@ class HybridRouter {
     ];
     const isBrowserOperation = browserKeywords.some(kw => text.includes(kw)) || Boolean(context.page || context.dom);
 
-    // Check for complex reasoning / code synthesis
+    // Check for complex reasoning / architectural code synthesis
     const complexKeywords = [
-      'refactor', 'architect', 'design', 'debug', 'explain', 'optimize',
-      'algorithm', 'analyze complex', 'deep reasoning', 'plan strategy'
+      'refactor', 'architect', 'architecture', 'design pattern', 'optimize algorithm',
+      'complex algorithm', 'deep reasoning', 'plan complex', 'synthesize architecture',
+      'security audit analysis'
     ];
     const isComplexReasoning = complexKeywords.some(kw => text.includes(kw));
 
     // Check for sensitive credentials or private tokens
     const sensitiveKeywords = [
-      '.env', 'password', 'token', 'secret', 'id_rsa', 'key', 'credential', 'auth'
+      '.env', 'password', 'token', 'secret', 'id_rsa', 'id_ed25519', 'key', 'credential', 'auth'
     ];
     const isSensitive = sensitiveKeywords.some(kw => text.includes(kw));
 
@@ -56,9 +57,9 @@ class HybridRouter {
 
   // Check which providers are configured and ready
   getProviderAvailability(config = {}) {
-    const geminiKey = process.env.GEMINI_API_KEY || config.geminiKey;
-    const anthropicKey = process.env.ANTHROPIC_API_KEY || config.anthropicKey;
-    const openAiKey = process.env.OPENAI_API_KEY || config.openAiKey;
+    const geminiKey = process.env.GEMINI_API_KEY || config.geminiKey || config.providers?.gemini?.apiKey;
+    const anthropicKey = process.env.ANTHROPIC_API_KEY || config.anthropicKey || config.providers?.anthropic?.apiKey;
+    const openAiKey = process.env.OPENAI_API_KEY || config.openAiKey || config.providers?.openai?.apiKey;
     const ollamaBaseUrl = process.env.OLLAMA_BASE_URL || config.ollamaUrl || config.providers?.ollama?.baseUrl || 'http://localhost:11434';
     const ollamaModel = config.providers?.ollama?.model || 'llama3.2';
 
@@ -84,20 +85,33 @@ class HybridRouter {
     const policy = (effectiveConfig.hybridRoutingPolicy || 'balanced').toLowerCase();
     const classification = this.classifyTask(task, context);
     const availability = this.getProviderAvailability(effectiveConfig);
+    const allowFallback = Boolean(effectiveConfig.allowFallbackOnMissingCredentials);
 
     // 1. Explicit Non-Hybrid Manual Provider Selection
+    // In Manual mode: strictly respect chosen provider; do NOT silently substitute Autonomous Engine unless fallback is explicitly enabled!
     if (requested !== 'hybrid') {
       switch (requested) {
         case 'gemini': {
           if (!availability.gemini.available) {
+            if (allowFallback) {
+              return {
+                provider: new FallbackAgentProvider(toolRegistry),
+                activeProviderName: 'autonomous',
+                requestedProvider: 'gemini',
+                policy: 'manual',
+                isFallback: true,
+                fallbackReason: 'Gemini API key missing. Fell back to Autonomous Engine (Fallback Allowed).',
+                model: availability.gemini.model
+              };
+            }
             return {
-              provider: new FallbackAgentProvider(toolRegistry),
-              activeProviderName: 'autonomous',
+              provider: null,
+              activeProviderName: 'gemini',
               requestedProvider: 'gemini',
               policy: 'manual',
-              isFallback: true,
-              fallbackReason: 'Gemini API key missing. Configure GEMINI_API_KEY in .env or Settings. Fell back to Autonomous Engine.',
-              model: availability.gemini.model
+              blocked: true,
+              error: 'Gemini API key is not configured. Please add GEMINI_API_KEY in Settings or select an available provider.',
+              fallbackReason: 'Gemini API key missing. Execution blocked (Manual Mode).'
             };
           }
           return {
@@ -113,14 +127,25 @@ class HybridRouter {
         case 'claude':
         case 'anthropic': {
           if (!availability.anthropic.available) {
+            if (allowFallback) {
+              return {
+                provider: new FallbackAgentProvider(toolRegistry),
+                activeProviderName: 'autonomous',
+                requestedProvider: 'anthropic',
+                policy: 'manual',
+                isFallback: true,
+                fallbackReason: 'Anthropic API key missing. Fell back to Autonomous Engine (Fallback Allowed).',
+                model: availability.anthropic.model
+              };
+            }
             return {
-              provider: new FallbackAgentProvider(toolRegistry),
-              activeProviderName: 'autonomous',
+              provider: null,
+              activeProviderName: 'anthropic',
               requestedProvider: 'anthropic',
               policy: 'manual',
-              isFallback: true,
-              fallbackReason: 'Anthropic API key missing. Configure ANTHROPIC_API_KEY in .env or Settings. Fell back to Autonomous Engine.',
-              model: availability.anthropic.model
+              blocked: true,
+              error: 'Anthropic API key is not configured. Please add ANTHROPIC_API_KEY in Settings or select an available provider.',
+              fallbackReason: 'Anthropic API key missing. Execution blocked (Manual Mode).'
             };
           }
           return {
@@ -135,14 +160,25 @@ class HybridRouter {
 
         case 'openai': {
           if (!availability.openai.available) {
+            if (allowFallback) {
+              return {
+                provider: new FallbackAgentProvider(toolRegistry),
+                activeProviderName: 'autonomous',
+                requestedProvider: 'openai',
+                policy: 'manual',
+                isFallback: true,
+                fallbackReason: 'OpenAI API key missing. Fell back to Autonomous Engine (Fallback Allowed).',
+                model: availability.openai.model
+              };
+            }
             return {
-              provider: new FallbackAgentProvider(toolRegistry),
-              activeProviderName: 'autonomous',
+              provider: null,
+              activeProviderName: 'openai',
               requestedProvider: 'openai',
               policy: 'manual',
-              isFallback: true,
-              fallbackReason: 'OpenAI API key missing. Configure OPENAI_API_KEY in .env or Settings. Fell back to Autonomous Engine.',
-              model: availability.openai.model
+              blocked: true,
+              error: 'OpenAI API key is not configured. Please add OPENAI_API_KEY in Settings or select an available provider.',
+              fallbackReason: 'OpenAI API key missing. Execution blocked (Manual Mode).'
             };
           }
           return {
@@ -184,10 +220,9 @@ class HybridRouter {
     // 2. Hybrid AI Routing Logic based on Configured Policy
 
     // Policy A: Privacy-First
-    // Strict isolation: Local private files and commands are NEVER sent to cloud models.
+    // Strict isolation: Local private files, commands, and code are NEVER sent to cloud models.
     if (policy === 'privacy-first') {
       if (classification.isLocalOperation || classification.isSensitive) {
-        // Use local Ollama if configured
         if (effectiveConfig.preferLocalOllama || effectiveConfig.ollamaUrl) {
           return {
             provider: new OllamaProvider(availability.ollama.baseUrl, availability.ollama.model),
@@ -199,7 +234,6 @@ class HybridRouter {
             reason: 'Privacy-First Policy: Local workspace content routed to local Ollama LLM.'
           };
         }
-        // Zero-config offline Autonomous Engine for absolute local privacy
         return {
           provider: new FallbackAgentProvider(toolRegistry),
           activeProviderName: 'autonomous',
@@ -213,41 +247,50 @@ class HybridRouter {
     }
 
     // Policy B: Cloud-Preferred
-    // Uses highest priority available cloud provider, falling back to local
+    // Prioritizes cloud models if configured, falling back to local
     if (policy === 'cloud-preferred' && availability.hasCloud) {
       return this.selectCloudProvider(availability, policy, 'Cloud-Preferred Policy: Routed to top cloud provider.');
     }
 
     // Policy C: Balanced (Default)
-    // Local execution for simple local diagnostics and DOM parsing; cloud escalation for complex reasoning
+    // Ordinary tasks (local files, telemetry, DOM parsing, simple actions) stay LOCAL.
+    // Cloud escalation occurs ONLY when task requires complex cognitive reasoning and cloud is available.
     if (policy === 'balanced') {
-      // If task is purely querying local telemetry, simple file listing, or simple DOM distill without complex reasoning
-      if ((classification.isLocalOperation || classification.isBrowserOperation) && !classification.isComplexReasoning && !availability.hasCloud) {
-        return {
-          provider: new FallbackAgentProvider(toolRegistry),
-          activeProviderName: 'autonomous',
-          requestedProvider: 'hybrid',
-          policy: 'balanced',
-          isFallback: false,
-          model: 'deterministic-rules',
-          reason: 'Balanced Policy: Local execution handled via Built-in Autonomous Engine.'
-        };
-      }
-
-      // If cloud keys are available, escalate for higher cognitive reasoning
-      if (availability.hasCloud) {
+      // 1. If task requires complex cognitive reasoning and cloud keys are available, escalate
+      if (classification.isComplexReasoning && availability.hasCloud) {
         return this.selectCloudProvider(
           availability,
           policy,
-          classification.isComplexReasoning
-            ? 'Balanced Hybrid: Escalated to Cloud LLM for complex reasoning.'
-            : 'Balanced Hybrid: Cloud provider active.'
+          'Balanced Hybrid: Escalated to Cloud LLM for complex cognitive reasoning.'
         );
       }
+
+      // 2. Ordinary tasks (local inspection, reading/writing files, basic commands, DOM distill, screenshots) stay LOCAL
+      if (effectiveConfig.preferLocalOllama) {
+        return {
+          provider: new OllamaProvider(availability.ollama.baseUrl, availability.ollama.model),
+          activeProviderName: 'ollama',
+          requestedProvider: 'hybrid',
+          policy: 'balanced',
+          isFallback: false,
+          model: availability.ollama.model,
+          reason: 'Balanced Policy: Handled locally via Ollama LLM.'
+        };
+      }
+
+      // Default local engine for ordinary tasks
+      return {
+        provider: new FallbackAgentProvider(toolRegistry),
+        activeProviderName: 'autonomous',
+        requestedProvider: 'hybrid',
+        policy: 'balanced',
+        isFallback: false,
+        model: 'deterministic-rules',
+        reason: 'Balanced Policy: Handled locally via Built-in Autonomous Engine.'
+      };
     }
 
-    // 3. Fallback: No cloud keys configured in Hybrid mode
-    // Check if user has explicit Ollama endpoint configured
+    // 3. Fallback: No cloud keys configured or local preferred
     if (effectiveConfig.preferLocalOllama) {
       return {
         provider: new OllamaProvider(availability.ollama.baseUrl, availability.ollama.model),
@@ -260,7 +303,6 @@ class HybridRouter {
       };
     }
 
-    // Standard zero-config offline Autonomous Engine
     return {
       provider: new FallbackAgentProvider(toolRegistry),
       activeProviderName: 'autonomous',

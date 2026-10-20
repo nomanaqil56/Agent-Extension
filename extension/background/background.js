@@ -39,7 +39,8 @@ function connectToLocalEngine() {
   chrome.storage.local.get(['enginePort', 'authToken'], (res) => {
     const port = res.enginePort || DEFAULT_ENGINE_PORT;
     const token = res.authToken || authToken || '';
-    const wsUrl = `ws://127.0.0.1:${port}?token=${encodeURIComponent(token)}`;
+    // Security Phase 9.4: No authentication tokens in WebSocket URLs
+    const wsUrl = `ws://127.0.0.1:${port}`;
 
     if (localEngineWs) {
       try {
@@ -48,26 +49,16 @@ function connectToLocalEngine() {
     }
 
     try {
-      console.log(`[Antigravity] Connecting to Local Engine at ws://127.0.0.1:${port}...`);
+      console.log(`[Antigravity] Connecting to Local Engine at ${wsUrl}...`);
       localEngineWs = new WebSocket(wsUrl);
 
       localEngineWs.onopen = () => {
-        console.log('[Antigravity] Connected to Local Agent Engine!');
-        isConnectedToEngine = true;
-
-        // Send auth handshake message
-        if (token) {
-          localEngineWs.send(JSON.stringify({
-            type: 'AUTH_HANDSHAKE',
-            token
-          }));
-        }
-
-        broadcastToExtensionViews({
-          type: 'ENGINE_STATUS',
-          connected: true,
-          port
-        });
+        console.log('[Antigravity] Socket opened. Initiating authentication handshake...');
+        // Handshake with security token over established socket
+        localEngineWs.send(JSON.stringify({
+          type: 'AUTH_HANDSHAKE',
+          token
+        }));
 
         // Register client as browser extension
         localEngineWs.send(JSON.stringify({
@@ -81,17 +72,33 @@ function connectToLocalEngine() {
       localEngineWs.onmessage = async (event) => {
         try {
           const message = JSON.parse(event.data);
-          handleEngineMessage(message);
+          handleEngineMessage(message, port);
         } catch (err) {
           console.error('[Antigravity] Failed to parse engine message:', err);
         }
       };
 
-      localEngineWs.onclose = () => {
-        if (isConnectedToEngine) {
+      localEngineWs.onclose = (event) => {
+        const wasConnected = isConnectedToEngine;
+        isConnectedToEngine = false;
+
+        if (event.code === 4003) {
+          console.warn('[Antigravity] Authentication rejected by engine (Code 4003).');
+          broadcastToExtensionViews({
+            type: 'ENGINE_STATUS',
+            connected: false,
+            authFailed: true,
+            port,
+            error: 'Authentication failed. Please verify token or use Pairing Code in Settings.'
+          });
+          // Back off when token is rejected to avoid busy hammering
+          setTimeout(connectToLocalEngine, 10000);
+          return;
+        }
+
+        if (wasConnected) {
           console.log('[Antigravity] Disconnected from Local Agent Engine. Retrying in 4s...');
         }
-        isConnectedToEngine = false;
         broadcastToExtensionViews({
           type: 'ENGINE_STATUS',
           connected: false,
@@ -112,9 +119,37 @@ function connectToLocalEngine() {
 }
 
 // Route incoming commands from Local Engine (e.g. click, scroll, tabs, DOM extract)
-async function handleEngineMessage(msg) {
+async function handleEngineMessage(msg, port) {
+  // Handle Authentication and Connection State
+  if (msg.type === 'ENGINE_STATUS') {
+    if (msg.connected && msg.authenticated) {
+      isConnectedToEngine = true;
+      console.log('[Antigravity] Engine connection and authentication verified!');
+      broadcastToExtensionViews({
+        type: 'ENGINE_STATUS',
+        connected: true,
+        authenticated: true,
+        port
+      });
+    }
+    return;
+  }
+
+  if (msg.type === 'AUTH_FAILED') {
+    isConnectedToEngine = false;
+    console.warn('[Antigravity] Engine auth failed:', msg.error);
+    broadcastToExtensionViews({
+      type: 'ENGINE_STATUS',
+      connected: false,
+      authFailed: true,
+      port,
+      error: msg.error || 'Authentication failed'
+    });
+    return;
+  }
+
   // If the engine sends agent progress/stream to be rendered in UI
-  if (['AGENT_THOUGHT', 'AGENT_MESSAGE', 'STREAM_CHUNK', 'TOOL_START', 'TOOL_FINISH', 'APPROVAL_REQUEST', 'TASK_COMPLETE'].includes(msg.type)) {
+  if (['AGENT_THOUGHT', 'AGENT_MESSAGE', 'STREAM_CHUNK', 'TOOL_START', 'TOOL_FINISH', 'APPROVAL_REQUEST', 'TASK_COMPLETE', 'PROVIDER_ACTIVE', 'PROVIDER_SWITCH'].includes(msg.type)) {
     broadcastToExtensionViews(msg);
     return;
   }

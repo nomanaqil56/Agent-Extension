@@ -318,8 +318,21 @@ async function runTests() {
     assert.strictEqual(route.activeProviderName, 'anthropic');
   });
 
-  await test('Hybrid Router: Manual provider selection reports transparent fallback when key missing', async () => {
+  await test('Hybrid Router: Manual provider selection blocks execution when credentials missing without fallback', async () => {
     const router = new HybridRouter({});
+    const route = router.routeTask({
+      task: 'Search page',
+      providerName: 'openai',
+      toolRegistry: tools
+    });
+
+    assert.strictEqual(route.blocked, true);
+    assert.strictEqual(route.activeProviderName, 'openai');
+    assert.ok(route.error.includes('OpenAI API key is not configured'));
+  });
+
+  await test('Hybrid Router: Manual provider selection falls back only when explicitly enabled', async () => {
+    const router = new HybridRouter({ allowFallbackOnMissingCredentials: true });
     const route = router.routeTask({
       task: 'Search page',
       providerName: 'openai',
@@ -329,6 +342,22 @@ async function runTests() {
     assert.strictEqual(route.isFallback, true);
     assert.strictEqual(route.activeProviderName, 'autonomous');
     assert.ok(route.fallbackReason.includes('OpenAI API key missing'));
+  });
+
+  await test('Hybrid Router: Balanced policy keeps ordinary tasks local even when cloud keys exist', async () => {
+    const router = new HybridRouter({
+      hybridRoutingPolicy: 'balanced',
+      geminiKey: 'mock-gemini-key'
+    });
+
+    const route = router.routeTask({
+      task: 'Inspect local file list and read package.json',
+      providerName: 'hybrid',
+      toolRegistry: tools
+    });
+
+    assert.strictEqual(route.activeProviderName, 'autonomous');
+    assert.ok(route.reason.includes('Balanced Policy: Handled locally'));
   });
 
   await test('Ollama Provider: checkHealth returns structured diagnostics', async () => {
@@ -365,6 +394,64 @@ async function runTests() {
     const entries = auditLogger.getRecentEntries(10);
     assert.strictEqual(entries.length, 1);
     assert.strictEqual(entries[0].action, 'AUDIT_LOG_CLEARED');
+  });
+
+  // 13. Workspace Removal & Zero-Workspace Lockdown
+  await test('Workspace Removal: Can remove approved directory and leave list completely empty', async () => {
+    const pm = new PermissionManager({ approvedDirectories: ['D:\\MockWorkspace'] });
+    assert.strictEqual(pm.getApprovedDirectories().length, 1);
+    const removed = pm.removeApprovedDirectory('D:\\MockWorkspace');
+    assert.strictEqual(removed, true);
+    assert.strictEqual(pm.getApprovedDirectories().length, 0);
+    assert.strictEqual(pm.isWorkspaceConfigured(), false);
+  });
+
+  await test('Workspace Lockdown: Denies all filesystem and terminal operations when no workspace is approved', async () => {
+    const emptyPM = new PermissionManager({ approvedDirectories: [] });
+    assert.strictEqual(emptyPM.isWorkspaceConfigured(), false);
+    const emptyTools = new ToolRegistry(emptyPM, auditLogger, emergencyCoord, mockServerContext);
+
+    let fileBlocked = false;
+    try {
+      await emptyTools.execute('read_file', { filePath: path.join(workspaceRoot, 'package.json') });
+    } catch (e) {
+      fileBlocked = e.message.includes('No approved workspace directory is configured');
+    }
+    assert.strictEqual(fileBlocked, true, 'read_file must be blocked when no workspace approved');
+
+    let commandBlocked = false;
+    try {
+      await emptyTools.execute('execute_command', { command: 'echo hello' });
+    } catch (e) {
+      commandBlocked = e.message.includes('No approved workspace directory is configured');
+    }
+    assert.strictEqual(commandBlocked, true, 'execute_command must be blocked when no workspace approved');
+  });
+
+  await test('Workspace Access: Requires explicit user action to grant access to another workspace', async () => {
+    const pm = new PermissionManager({ approvedDirectories: [] });
+    assert.strictEqual(pm.isWorkspaceConfigured(), false);
+    pm.addApprovedDirectory(workspaceRoot);
+    assert.strictEqual(pm.isWorkspaceConfigured(), true);
+    assert.strictEqual(pm.isPathApproved(path.join(workspaceRoot, 'package.json')), true);
+  });
+
+  // 14. Settings Synchronization & Dynamic Orchestrator Updates
+  await test('Settings Synchronization: Dynamic configuration update propagates to orchestrator and router', async () => {
+    const AgentOrchestrator = require('../src/agent/orchestrator');
+    const MemoryManager = require('../src/agent/memory');
+    const orchestrator = new AgentOrchestrator(tools, new MemoryManager(), {
+      activeProvider: 'hybrid',
+      hybridRoutingPolicy: 'balanced'
+    });
+
+    assert.strictEqual(orchestrator.config.hybridRoutingPolicy, 'balanced');
+    orchestrator.updateConfig({
+      hybridRoutingPolicy: 'privacy-first',
+      ollamaUrl: 'http://127.0.0.1:11434'
+    });
+    assert.strictEqual(orchestrator.config.hybridRoutingPolicy, 'privacy-first');
+    assert.strictEqual(orchestrator.config.ollamaUrl, 'http://127.0.0.1:11434');
   });
 
   // Clean up test log directory

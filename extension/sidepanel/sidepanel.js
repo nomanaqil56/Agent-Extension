@@ -39,6 +39,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // Settings Elements
   const settingEngineUrl = document.getElementById('setting-engine-url');
   const settingAuthToken = document.getElementById('setting-auth-token');
+  const settingPairingCode = document.getElementById('setting-pairing-code');
+  const btnPairEngine = document.getElementById('btn-pair-engine');
+  const pairingHint = document.getElementById('pairing-hint');
   const settingProvider = document.getElementById('setting-provider');
   const settingRoutingPolicy = document.getElementById('setting-routing-policy');
   const settingGeminiKey = document.getElementById('setting-gemini-key');
@@ -358,7 +361,7 @@ document.addEventListener('DOMContentLoaded', () => {
   chrome.runtime.onMessage.addListener((msg) => {
     switch (msg.type) {
       case 'ENGINE_STATUS':
-        updateEngineStatus(msg.connected, msg.port);
+        updateEngineStatus(msg.connected, msg.port, msg.authFailed, msg.error);
         break;
 
       case 'PROVIDER_ACTIVE':
@@ -865,7 +868,11 @@ document.addEventListener('DOMContentLoaded', () => {
   function renderWorkspaces(workspaces) {
     workspacesList.innerHTML = '';
     if (!workspaces || workspaces.length === 0) {
-      workspacesList.innerHTML = `<div style="font-size:11px;color:#9CA3AF;padding:4px;">No approved workspaces configured.</div>`;
+      workspacesList.innerHTML = `
+        <div style="font-size:11px;color:#FFB800;padding:6px;background:rgba(255,184,0,0.1);border-radius:4px;border:1px dashed #FFB800;">
+          ⚠️ No approved workspaces. Filesystem and terminal operations are completely locked down until you approve a workspace directory below.
+        </div>
+      `;
       return;
     }
 
@@ -957,11 +964,17 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  function updateEngineStatus(connected, port = 3721) {
+  function updateEngineStatus(connected, port = 3721, authFailed = false, error = null) {
     isConnected = Boolean(connected);
     if (isConnected) {
       enginePill.className = 'agy-status-pill connected';
       engineStatusText.textContent = `ONLINE :${port}`;
+    } else if (authFailed) {
+      enginePill.className = 'agy-status-pill error';
+      engineStatusText.textContent = 'AUTH FAILED';
+      if (error) {
+        appendSystemNotice(`⚠️ ${error}`);
+      }
     } else {
       enginePill.className = 'agy-status-pill disconnected';
       engineStatusText.textContent = 'OFFLINE';
@@ -980,7 +993,60 @@ document.addEventListener('DOMContentLoaded', () => {
     refreshActiveTabContext();
   });
 
-  // --- 12. Settings Storage ---
+  // --- 12. Settings Storage & Engine Synchronization ---
+
+  // Ephemeral First-Run Pairing Handler
+  if (btnPairEngine) {
+    btnPairEngine.addEventListener('click', async () => {
+      const pairingCode = settingPairingCode ? settingPairingCode.value.trim() : '';
+      if (!pairingCode) {
+        if (pairingHint) {
+          pairingHint.textContent = 'Please enter the 6-character code from the engine console.';
+          pairingHint.style.color = '#FF2E63';
+          pairingHint.style.display = 'block';
+        }
+        return;
+      }
+
+      let port = 3721;
+      const match = settingEngineUrl.value.match(/:(\d+)/);
+      if (match) port = parseInt(match[1], 10);
+
+      try {
+        const resp = await fetch(`http://127.0.0.1:${port}/pair`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pairingCode })
+        });
+        const data = await resp.json();
+        if (resp.ok && data.token) {
+          settingAuthToken.value = data.token;
+          chrome.storage.local.set({ authToken: data.token });
+          if (pairingHint) {
+            pairingHint.textContent = '🎉 Engine paired successfully! Security token updated.';
+            pairingHint.style.color = '#00E676';
+            pairingHint.style.display = 'block';
+          }
+          chrome.runtime.sendMessage({ action: 'RECONNECT_ENGINE' });
+          setTimeout(checkEngineStatus, 800);
+          setTimeout(checkProviderHealth, 1000);
+          setTimeout(loadWorkspaces, 1000);
+        } else {
+          if (pairingHint) {
+            pairingHint.textContent = `Pairing failed: ${data.error || 'Invalid code'}`;
+            pairingHint.style.color = '#FF2E63';
+            pairingHint.style.display = 'block';
+          }
+        }
+      } catch (err) {
+        if (pairingHint) {
+          pairingHint.textContent = `Engine unreachable at port ${port}. Ensure engine is running.`;
+          pairingHint.style.color = '#FF2E63';
+          pairingHint.style.display = 'block';
+        }
+      }
+    });
+  }
 
   function loadSettings() {
     chrome.storage.local.get([
@@ -1008,17 +1074,37 @@ document.addEventListener('DOMContentLoaded', () => {
       if (typeof res.audioFeedback === 'boolean') {
         settingAudioFeedback.checked = res.audioFeedback;
       }
+
+      // Query engine for masked settings status if token is present
+      if (res.authToken) {
+        fetch(`http://127.0.0.1:${port}/config`, {
+          headers: { Authorization: `Bearer ${res.authToken}` }
+        }).then(r => r.ok ? r.json() : null).then(engineCfg => {
+          if (engineCfg) {
+            if (engineCfg.hasGeminiKey && !settingGeminiKey.value) {
+              settingGeminiKey.placeholder = `Configured in Engine (${engineCfg.geminiApiKey})`;
+            }
+            if (engineCfg.hasAnthropicKey && !settingAnthropicKey.value) {
+              settingAnthropicKey.placeholder = `Configured in Engine (${engineCfg.anthropicApiKey})`;
+            }
+            if (engineCfg.hasOpenaiKey && !settingOpenAiKey.value) {
+              settingOpenAiKey.placeholder = `Configured in Engine (${engineCfg.openaiApiKey})`;
+            }
+          }
+        }).catch(() => {});
+      }
     });
   }
 
-  saveSettingsBtn.addEventListener('click', () => {
+  saveSettingsBtn.addEventListener('click', async () => {
     let port = 3721;
     const match = settingEngineUrl.value.match(/:(\d+)/);
     if (match) port = parseInt(match[1], 10);
 
+    const token = settingAuthToken.value.trim();
     const config = {
       enginePort: port,
-      authToken: settingAuthToken.value.trim(),
+      authToken: token,
       selectedProvider: settingProvider.value,
       hybridRoutingPolicy: settingRoutingPolicy.value,
       geminiKey: settingGeminiKey.value.trim(),
@@ -1028,10 +1114,42 @@ document.addEventListener('DOMContentLoaded', () => {
       audioFeedback: settingAudioFeedback.checked
     };
 
-    chrome.storage.local.set(config, () => {
+    chrome.storage.local.set(config, async () => {
       modelSelect.value = config.selectedProvider;
+
+      // Authenticated Settings Synchronization to Local Engine
+      try {
+        const resp = await fetch(`http://127.0.0.1:${port}/config`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            activeProvider: config.selectedProvider,
+            hybridRoutingPolicy: config.hybridRoutingPolicy,
+            geminiApiKey: config.geminiKey,
+            anthropicApiKey: config.anthropicKey,
+            openaiApiKey: config.openAiKey,
+            ollamaUrl: config.ollamaUrl,
+            preferLocalOllama: (config.selectedProvider === 'ollama' || config.hybridRoutingPolicy === 'privacy-first')
+          })
+        });
+
+        if (resp.ok) {
+          settingsSavedHint.textContent = 'Settings saved and applied to Local Engine!';
+          settingsSavedHint.style.color = '#00E676';
+        } else {
+          settingsSavedHint.textContent = 'Saved in browser (Local Engine offline/unauthenticated).';
+          settingsSavedHint.style.color = '#FFB800';
+        }
+      } catch (err) {
+        settingsSavedHint.textContent = 'Saved in browser (Local Engine unreachable).';
+        settingsSavedHint.style.color = '#FFB800';
+      }
+
       settingsSavedHint.style.display = 'block';
-      setTimeout(() => { settingsSavedHint.style.display = 'none'; }, 2500);
+      setTimeout(() => { settingsSavedHint.style.display = 'none'; }, 3000);
       chrome.runtime.sendMessage({ action: 'RECONNECT_ENGINE' });
       checkProviderHealth();
     });

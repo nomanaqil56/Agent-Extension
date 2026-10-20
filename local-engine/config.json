@@ -4,6 +4,10 @@
   "authToken": "",
   "activeProvider": "hybrid",
   "hybridRoutingPolicy": "balanced",
+  "ollamaUrl": "http://localhost:11434",
+  "ollamaModel": "llama3",
+  "preferLocalOllama": false,
+  "allowFallbackOnMissingCredentials": false,
   "approvedDirectories": [
     "."
   ],
@@ -11,9 +15,6 @@
     "code",
     "notepad",
     "calc",
-    "cmd",
-    "powershell",
-    "wt",
     "git"
   ],
   "security": {
@@ -28,20 +29,5 @@
       ":\\(\\)\\s*\\{\\s*:\\|:&\\s*\\};:",
       "dd\\s+if="
     ]
-  },
-  "providers": {
-    "ollama": {
-      "baseUrl": "http://localhost:11434",
-      "model": "llama3.2"
-    },
-    "gemini": {
-      "model": "gemini-2.0-flash"
-    },
-    "anthropic": {
-      "model": "claude-3-5-sonnet-20241022"
-    },
-    "openai": {
-      "model": "gpt-4o"
-    }
   }
 }

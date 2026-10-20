@@ -15,7 +15,10 @@ class TerminalTool {
       throw new Error('Command string is required');
     }
 
-    const workingDir = cwd ? path.resolve(cwd) : this.permissionManager.approvedDirectories[0] || process.cwd();
+    const workingDir = cwd ? path.resolve(cwd) : (this.permissionManager.approvedDirectories && this.permissionManager.approvedDirectories[0] ? this.permissionManager.approvedDirectories[0] : null);
+    if (!workingDir) {
+      throw new Error('No approved workspace directory configured. Cannot execute command without an approved workspace.');
+    }
     if (!this.permissionManager.isPathApproved(workingDir)) {
       throw new Error(`Working directory "${workingDir}" is outside approved directories.`);
     }

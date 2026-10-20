@@ -10,6 +10,10 @@ class AgentOrchestrator {
     this.config = config;
   }
 
+  updateConfig(newConfig) {
+    this.config = { ...this.config, ...newConfig };
+  }
+
   // Execute full agent task pipeline
   async runTask({ task, providerName = 'hybrid', context = {}, clientWs = null, abortSignal = null }) {
     console.log(`\n[Agent Orchestrator] Starting task: "${task}" (Requested: ${providerName})`);
@@ -42,7 +46,17 @@ class AgentOrchestrator {
       config: this.config,
       toolRegistry: this.toolRegistry
     });
-    const { provider, activeProviderName, isFallback, fallbackReason, policy, model, reason } = routed;
+    const { provider, activeProviderName, isFallback, fallbackReason, policy, model, reason, blocked, error } = routed;
+
+    if (blocked) {
+      notify({
+        type: 'TASK_COMPLETE',
+        success: false,
+        blocked: true,
+        summary: `❌ ${error || 'Provider not configured'}`
+      });
+      return { success: false, blocked: true, summary: error || 'Provider not configured' };
+    }
 
     // Report active provider, policy, and any fallback switch
     notify({
@@ -68,7 +82,7 @@ class AgentOrchestrator {
     }
 
     // Otherwise run iterative ReAct loop with selected LLM
-    return this.runLlmReActLoop(task, context, provider, notify, abortSignal);
+    return this.runLlmReActLoop(task, context, provider, notify, abortSignal, policy);
   }
 
   // --- Autonomous Engine Execution ---
@@ -292,6 +306,29 @@ class AgentOrchestrator {
             tool,
             result: toolRes.result
           });
+
+          // Enforce Privacy-First rule at the exact boundary where local content could be sent to a cloud provider
+          const activePolicy = policy || this.config.hybridRoutingPolicy || 'balanced';
+          const localContentTools = [
+            'read_file', 'search_files', 'list_files', 'file_info',
+            'write_file', 'patch_file', 'delete_file', 'execute_command', 'clipboard_read'
+          ];
+          const isCloudProvider = provider.constructor.name !== 'OllamaProvider' &&
+                                  provider.constructor.name !== 'FallbackAgentProvider';
+
+          if (activePolicy === 'privacy-first' && localContentTools.includes(tool) && isCloudProvider) {
+            notify({
+              type: 'PROVIDER_SWITCH',
+              provider: 'autonomous',
+              reason: `Privacy-First Policy: Local workspace content accessed via ${tool}. Execution transferred to local Autonomous Engine.`
+            });
+            notify({
+              type: 'AGENT_MESSAGE',
+              message: `🔒 Privacy-First: Switched to local Autonomous Engine to process local data securely without cloud transmission.`
+            });
+            const fallback = new FallbackAgentProvider(this.toolRegistry);
+            return this.runAutonomousFallback(task, context, fallback, notify, abortSignal);
+          }
 
           // Append observation to conversation history
           messages.push({

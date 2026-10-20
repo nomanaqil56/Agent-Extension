@@ -21,13 +21,26 @@ const OllamaProvider = require('./agent/providers/ollama');
 const crypto = require('crypto');
 
 // Load configuration
-const configPath = path.join(__dirname, '..', 'config.json');
+const configPath = process.env.ENGINE_CONFIG_PATH || path.join(__dirname, '..', 'config.json');
 let config = {
   port: 3721,
   host: '127.0.0.1',
   authToken: '',
   approvedDirectories: [process.cwd()],
-  approvedApplications: ['code', 'notepad', 'calc', 'git']
+  approvedApplications: ['code', 'notepad', 'calc', 'git'],
+  security: {
+    requireApprovalForShell: true,
+    requireApprovalForFileWrite: true,
+    requireApprovalForFileDelete: true,
+    requireApprovalForClipboardRead: true,
+    maxShellExecutionTimeoutMs: 45000,
+    blockedShellPatterns: [
+      'format\\s+[a-zA-Z]:',
+      'rmdir\\s+/[sS]\\s+/[qQ]\\s+[cC]:\\\\',
+      ':\\(\\)\\s*\\{\\s*:\\|:&\\s*\\};:',
+      'dd\\s+if='
+    ]
+  }
 };
 
 try {
@@ -52,6 +65,56 @@ let AUTH_TOKEN = (process.env.ENGINE_AUTH_TOKEN || config.authToken || '').trim(
 if (!AUTH_TOKEN) {
   AUTH_TOKEN = crypto.randomBytes(32).toString('hex');
   console.log(`[Server] Generated secure ephemeral token for session: ${AUTH_TOKEN.slice(0, 8)}...`);
+}
+
+// Ephemeral pairing code for first-run pairing and credential recovery (loopback-only)
+const PAIRING_CODE = (process.env.ENGINE_PAIRING_CODE || crypto.randomBytes(3).toString('hex')).toUpperCase();
+
+// Helper: Safely mask secret credentials
+function maskSecret(str) {
+  if (!str || typeof str !== 'string') return '';
+  const trimmed = str.trim();
+  if (trimmed.length <= 8) return '••••••••';
+  return trimmed.slice(0, 3) + '••••••••' + trimmed.slice(-4);
+}
+
+// Helper: Safely persist config.json
+function persistConfigFile() {
+  try {
+    const toSave = {
+      port: PORT,
+      host: HOST,
+      authToken: AUTH_TOKEN,
+      activeProvider: config.activeProvider || 'hybrid',
+      hybridRoutingPolicy: config.hybridRoutingPolicy || 'balanced',
+      ollamaUrl: config.ollamaUrl || 'http://localhost:11434',
+      ollamaModel: config.ollamaModel || 'llama3',
+      preferLocalOllama: Boolean(config.preferLocalOllama),
+      allowFallbackOnMissingCredentials: Boolean(config.allowFallbackOnMissingCredentials),
+      approvedDirectories: permissionManager.getApprovedDirectories(),
+      approvedApplications: config.approvedApplications || ['code', 'notepad', 'calc', 'git'],
+      security: config.security || {
+        requireApprovalForShell: true,
+        requireApprovalForFileWrite: true,
+        requireApprovalForFileDelete: true,
+        requireApprovalForClipboardRead: true,
+        maxShellExecutionTimeoutMs: 45000,
+        blockedShellPatterns: [
+          'format\\s+[a-zA-Z]:',
+          'rmdir\\s+/[sS]\\s+/[qQ]\\s+[cC]:\\\\',
+          ':\\(\\)\\s*\\{\\s*:\\|:&\\s*\\};:',
+          'dd\\s+if='
+        ]
+      }
+    };
+    if (config.geminiApiKey) toSave.geminiApiKey = config.geminiApiKey;
+    if (config.anthropicApiKey) toSave.anthropicApiKey = config.anthropicApiKey;
+    if (config.openaiApiKey) toSave.openaiApiKey = config.openaiApiKey;
+
+    fs.writeFileSync(configPath, JSON.stringify(toSave, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('[Server] Could not persist config.json:', err.message);
+  }
 }
 
 // Initialize Security, Storage & Execution Core
@@ -113,6 +176,45 @@ function authenticateHttp(req, res, next) {
   return res.status(401).json({ error: 'Unauthorized: Invalid Antigravity security token' });
 }
 
+// Loopback-only Pairing Endpoint for First-Run and Credential Recovery
+app.post('/pair', (req, res) => {
+  const remoteIp = req.socket.remoteAddress || '';
+  const isLoopback = remoteIp === '127.0.0.1' ||
+                     remoteIp === '::1' ||
+                     remoteIp === '::ffff:127.0.0.1' ||
+                     req.hostname === 'localhost' ||
+                     req.hostname === '127.0.0.1';
+
+  if (!isLoopback) {
+    return res.status(403).json({ error: 'Pairing is only allowed from local loopback.' });
+  }
+
+  const { pairingCode } = req.body || {};
+  if (!pairingCode || pairingCode.trim().toUpperCase() !== PAIRING_CODE) {
+    auditLogger.log({
+      action: 'PAIRING_FAILED',
+      status: 'DENIED',
+      riskLevel: 'medium',
+      params: { ip: remoteIp }
+    });
+    return res.status(401).json({ error: 'Invalid pairing code' });
+  }
+
+  auditLogger.log({
+    action: 'PAIRING_SUCCESSFUL',
+    status: 'APPROVED',
+    riskLevel: 'low',
+    params: { ip: remoteIp }
+  });
+
+  return res.json({
+    success: true,
+    token: AUTH_TOKEN,
+    port: PORT,
+    message: 'Pairing successful. Token retrieved.'
+  });
+});
+
 // REST Endpoints
 // Unauthenticated Health: minimized info to prevent reconnaissance (Phase 9.5)
 app.get('/health', (req, res) => {
@@ -137,6 +239,101 @@ app.get('/engine-info', authenticateHttp, (req, res) => {
   });
 });
 
+// Configuration retrieval (Secrets safely masked)
+app.get('/config', authenticateHttp, (req, res) => {
+  const geminiKey = config.geminiApiKey || process.env.GEMINI_API_KEY || '';
+  const anthropicKey = config.anthropicApiKey || process.env.ANTHROPIC_API_KEY || '';
+  const openaiKey = config.openaiApiKey || process.env.OPENAI_API_KEY || '';
+  const ollamaUrl = config.ollamaUrl || process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
+  const ollamaModel = config.ollamaModel || process.env.OLLAMA_MODEL || 'llama3';
+
+  res.json({
+    port: PORT,
+    host: HOST,
+    activeProvider: config.activeProvider || 'hybrid',
+    hybridRoutingPolicy: config.hybridRoutingPolicy || 'balanced',
+    ollamaUrl,
+    ollamaModel,
+    preferLocalOllama: Boolean(config.preferLocalOllama),
+    allowFallbackOnMissingCredentials: Boolean(config.allowFallbackOnMissingCredentials),
+    hasGeminiKey: Boolean(geminiKey),
+    geminiApiKey: maskSecret(geminiKey),
+    hasAnthropicKey: Boolean(anthropicKey),
+    anthropicApiKey: maskSecret(anthropicKey),
+    hasOpenaiKey: Boolean(openaiKey),
+    openaiApiKey: maskSecret(openaiKey),
+    approvedDirectories: permissionManager.getApprovedDirectories(),
+    approvedApplications: config.approvedApplications || []
+  });
+});
+
+// Authenticated Configuration Update
+app.post('/config', authenticateHttp, (req, res) => {
+  const {
+    activeProvider,
+    hybridRoutingPolicy,
+    geminiApiKey,
+    anthropicApiKey,
+    openaiApiKey,
+    ollamaUrl,
+    ollamaModel,
+    preferLocalOllama,
+    allowFallbackOnMissingCredentials
+  } = req.body || {};
+
+  if (activeProvider !== undefined) config.activeProvider = activeProvider;
+  if (hybridRoutingPolicy !== undefined) config.hybridRoutingPolicy = hybridRoutingPolicy;
+  if (ollamaUrl !== undefined) config.ollamaUrl = ollamaUrl.trim();
+  if (ollamaModel !== undefined) config.ollamaModel = ollamaModel.trim();
+  if (preferLocalOllama !== undefined) config.preferLocalOllama = Boolean(preferLocalOllama);
+  if (allowFallbackOnMissingCredentials !== undefined) {
+    config.allowFallbackOnMissingCredentials = Boolean(allowFallbackOnMissingCredentials);
+  }
+
+  // Update secret keys only if provided and not masked
+  if (geminiApiKey !== undefined && !geminiApiKey.includes('••••')) {
+    config.geminiApiKey = geminiApiKey.trim();
+  }
+  if (anthropicApiKey !== undefined && !anthropicApiKey.includes('••••')) {
+    config.anthropicApiKey = anthropicApiKey.trim();
+  }
+  if (openaiApiKey !== undefined && !openaiApiKey.includes('••••')) {
+    config.openaiApiKey = openaiApiKey.trim();
+  }
+
+  // Dynamically update orchestrator config
+  orchestrator.updateConfig(config);
+
+  // Persist updated configuration
+  persistConfigFile();
+
+  auditLogger.log({
+    action: 'SETTINGS_CONFIGURED',
+    status: 'SUCCESS',
+    riskLevel: 'low',
+    params: {
+      activeProvider: config.activeProvider,
+      hybridRoutingPolicy: config.hybridRoutingPolicy,
+      hasGemini: Boolean(config.geminiApiKey || process.env.GEMINI_API_KEY),
+      hasAnthropic: Boolean(config.anthropicApiKey || process.env.ANTHROPIC_API_KEY),
+      hasOpenai: Boolean(config.openaiApiKey || process.env.OPENAI_API_KEY),
+      ollamaUrl: config.ollamaUrl
+    }
+  });
+
+  return res.json({
+    success: true,
+    message: 'Configuration updated and applied.',
+    activeProvider: config.activeProvider,
+    hybridRoutingPolicy: config.hybridRoutingPolicy,
+    hasGeminiKey: Boolean(config.geminiApiKey || process.env.GEMINI_API_KEY),
+    hasAnthropicKey: Boolean(config.anthropicApiKey || process.env.ANTHROPIC_API_KEY),
+    hasOpenaiKey: Boolean(config.openaiApiKey || process.env.OPENAI_API_KEY),
+    ollamaUrl: config.ollamaUrl,
+    preferLocalOllama: config.preferLocalOllama
+  });
+});
+
 // Workspaces management (Phase 10.2)
 app.get('/workspaces', authenticateHttp, (req, res) => {
   res.json({
@@ -149,6 +346,7 @@ app.post('/workspaces', authenticateHttp, (req, res) => {
   if (!dirPath) return res.status(400).json({ error: 'Directory path is required' });
   try {
     const added = permissionManager.addApprovedDirectory(dirPath);
+    persistConfigFile();
     auditLogger.log({
       action: 'WORKSPACE_SCOPE_EXPANDED',
       status: 'APPROVED',
@@ -166,6 +364,7 @@ app.delete('/workspaces', authenticateHttp, (req, res) => {
   if (!dirPath) return res.status(400).json({ error: 'Directory path is required' });
   try {
     const removed = permissionManager.removeApprovedDirectory(dirPath);
+    persistConfigFile();
     auditLogger.log({
       action: 'WORKSPACE_SCOPE_REDUCED',
       status: 'APPROVED',
@@ -298,6 +497,7 @@ wss.on('connection', (ws, req) => {
     ws.send(JSON.stringify({
       type: 'ENGINE_STATUS',
       connected: true,
+      authenticated: true,
       port: PORT,
       message: 'Connected to Antigravity Local Agent Engine'
     }));
@@ -321,6 +521,7 @@ wss.on('connection', (ws, req) => {
           ws.send(JSON.stringify({
             type: 'ENGINE_STATUS',
             connected: true,
+            authenticated: true,
             port: PORT,
             message: 'Authentication successful. Connected to Local Agent Engine.'
           }));
@@ -428,7 +629,8 @@ server.listen(PORT, HOST, () => {
 ==========================================================
    Host:            ${HOST} (Loopback only)
    Port:            ${PORT}
-   WebSocket:       ws://${HOST}:${PORT}?token=***
+   WebSocket:       ws://${HOST}:${PORT}
+   Pairing Code:    ${PAIRING_CODE}
    Health Endpoint: http://${HOST}:${PORT}/health
    Approved Scope:  ${permissionManager.getApprovedDirectories().join(', ')}
    Active Provider: ${config.activeProvider || 'hybrid'}
@@ -459,7 +661,9 @@ module.exports = {
   emergencyCoordinator,
   toolRegistry,
   orchestrator,
+  config,
   PORT,
   HOST,
-  AUTH_TOKEN
+  AUTH_TOKEN,
+  PAIRING_CODE
 };

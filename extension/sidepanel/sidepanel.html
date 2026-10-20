@@ -240,6 +240,11 @@
           <div class="agy-form-group">
             <label>Security Authentication Token</label>
             <input type="password" id="setting-auth-token" class="agy-input" placeholder="Token from engine setup or leave empty for auto">
+            <div class="agy-add-workspace-row" style="margin-top: 6px;">
+              <input type="text" id="setting-pairing-code" class="agy-input" placeholder="6-char Pairing Code (e.g. from engine)" maxlength="12" style="font-family:monospace; text-transform:uppercase;">
+              <button id="btn-pair-engine" class="agy-small-btn" style="white-space:nowrap;">Pair Engine</button>
+            </div>
+            <div id="pairing-hint" style="font-size:11px; margin-top:4px; display:none;"></div>
           </div>
 
           <div class="agy-form-group">
