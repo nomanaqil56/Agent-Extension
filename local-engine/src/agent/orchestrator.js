@@ -439,7 +439,8 @@ class AgentOrchestrator {
           const localContentTools = [
             'read_file', 'search_files', 'list_files', 'file_info',
             'write_file', 'patch_file', 'delete_file', 'execute_command',
-            'clipboard_read', 'clipboard_write', 'launch_application', 'get_system_info'
+            'clipboard_read', 'clipboard_write', 'launch_application', 'get_system_info',
+            'browser_screenshot'
           ];
 
           if (activePolicy === 'privacy-first' && localContentTools.includes(tool) && isCloud) {
@@ -497,7 +498,8 @@ class AgentOrchestrator {
           const localContentTools = [
             'read_file', 'search_files', 'list_files', 'file_info',
             'write_file', 'patch_file', 'delete_file', 'execute_command',
-            'clipboard_read', 'clipboard_write', 'launch_application', 'get_system_info'
+            'clipboard_read', 'clipboard_write', 'launch_application', 'get_system_info',
+            'browser_screenshot'
           ];
           if (activePolicy === 'privacy-first' && localContentTools.includes(tool) && isCloud) {
             notify({

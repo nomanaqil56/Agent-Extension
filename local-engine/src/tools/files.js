@@ -170,7 +170,13 @@ class FilesTool {
 
     const filePattern = params.filePattern || null;
     const matches = [];
-    const regex = new RegExp(query, 'i');
+    let regex;
+    try {
+      regex = new RegExp(query, 'i');
+    } catch (e) {
+      const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      regex = new RegExp(escaped, 'i');
+    }
 
     const searchDir = (current, depth) => {
       if (depth > 4 || matches.length >= 40) return;
@@ -190,8 +196,10 @@ class FilesTool {
 
             const text = fs.readFileSync(fullPath, 'utf8');
             const lines = text.split(/\r?\n/);
+            const queryLower = query.toLowerCase();
             lines.forEach((line, idx) => {
-              if (regex.test(line) && matches.length < 40) {
+              const matched = (regex && regex.test(line)) || line.toLowerCase().includes(queryLower);
+              if (matched && matches.length < 40) {
                 matches.push({
                   file: path.relative(targetDir, fullPath),
                   line: idx + 1,

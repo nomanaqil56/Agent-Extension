@@ -1117,6 +1117,111 @@ async function runTests() {
     assert.strictEqual(result.state, 'confirmed', 'Dead process should be immediately confirmed');
   });
 
+  // 37. FilesTool: searchFiles safely handles regex metacharacters in query
+  await test('FilesTool: searchFiles safely handles regex metacharacters in query', async () => {
+    if (!fs.existsSync(testLogsDir)) fs.mkdirSync(testLogsDir, { recursive: true });
+    const searchFile = path.join(testLogsDir, 'regex_test.txt');
+    fs.writeFileSync(searchFile, 'function calculate(a, b) { return a[0] + b; }\n', 'utf8');
+
+    // Query containing unescaped regex metacharacters: '[0]', '(', '+', '?'
+    const res1 = await tools.filesTool.searchFiles({ dirPath: testLogsDir, query: 'calculate(' });
+    assert.ok(res1.totalMatches >= 1, 'Should find literal match for query with open paren');
+
+    const res2 = await tools.filesTool.searchFiles({ dirPath: testLogsDir, query: 'a[0]' });
+    assert.ok(res2.totalMatches >= 1, 'Should find literal match for query with brackets');
+
+    fs.unlinkSync(searchFile);
+  });
+
+  // 38. Security Policy: Safely handles malformed blockedShellPatterns without throwing
+  await test('Security Policy: Safely handles malformed blockedShellPatterns without throwing', async () => {
+    const customConfig = {
+      approvedDirectories: [workspaceRoot],
+      security: {
+        blockedShellPatterns: ['[unclosed_bracket', 'format\\s+[a-zA-Z]:', 'rmdir']
+      }
+    };
+    const pm = new PermissionManager(customConfig);
+    // Malformed pattern '[unclosed_bracket' must not crash the security analyzer
+    const risk1 = pm.analyzeActionRisk('execute_command', { command: 'echo [unclosed_bracket' });
+    assert.strictEqual(risk1.blocked, true, 'Matches malformed pattern via safe fallback string check');
+
+    const risk2 = pm.analyzeActionRisk('execute_command', { command: 'echo safe_command' });
+    assert.strictEqual(Boolean(risk2.blocked), false, 'Safe command not blocked despite malformed pattern in config');
+  });
+
+  // 39. Orchestrator: ReAct loop transfers execution locally when browser_screenshot is called under Privacy-First
+  await test('Orchestrator: ReAct loop transfers execution locally when browser_screenshot is called under Privacy-First', async () => {
+    const AgentOrchestrator = require('../src/agent/orchestrator');
+    let cloudCalled = false;
+    const mockCloud = {
+      isLocal: false,
+      isRemote: true,
+      category: 'cloud',
+      generateStep: async () => {
+        cloudCalled = true;
+        return {
+          type: 'tool_call',
+          tool: 'browser_screenshot',
+          params: {}
+        };
+      }
+    };
+
+    const orchestrator = new AgentOrchestrator(tools, { recordInteraction: () => {} }, {
+      activeProvider: 'gemini',
+      hybridRoutingPolicy: 'privacy-first',
+      providerInstances: { gemini: mockCloud }
+    });
+
+    // Provide mock browser screenshot handler
+    tools.browserTool.captureScreenshot = async () => 'data:image/png;base64,mockScreenshotData123';
+
+    let providerSwitched = false;
+    const notifications = [];
+    const notify = (msg) => {
+      notifications.push(msg);
+      if (msg.type === 'PROVIDER_SWITCH' && msg.provider === 'autonomous') {
+        providerSwitched = true;
+      }
+    };
+
+    const result = await orchestrator.runLlmReActLoop(
+      'Take a screenshot of the current page',
+      {},
+      mockCloud,
+      notify,
+      null,
+      'privacy-first',
+      'gemini'
+    );
+
+    assert.strictEqual(providerSwitched, true, 'Calling browser_screenshot must trigger PROVIDER_SWITCH to autonomous under privacy-first');
+    assert.strictEqual(result.success, true, 'Task completed locally via autonomous engine');
+  });
+
+  // 40. Orchestrator: Tool failure recovery does not corrupt state for subsequent task execution
+  await test('Orchestrator: Tool failure recovery does not corrupt state for subsequent task execution', async () => {
+    const AgentOrchestrator = require('../src/agent/orchestrator');
+    const orchestrator = new AgentOrchestrator(tools, { recordInteraction: () => {} }, {
+      activeProvider: 'autonomous'
+    });
+
+    // 1. Task that fails due to missing file
+    const res1 = await orchestrator.runTask({
+      task: 'read_file nonexistent_file_xyz_123.txt',
+      providerName: 'autonomous'
+    });
+    assert.strictEqual(res1.success, false, 'First task must fail cleanly');
+
+    // 2. Immediately execute second task; must succeed without corrupted state
+    const res2 = await orchestrator.runTask({
+      task: 'Check telemetry diagnostics',
+      providerName: 'autonomous'
+    });
+    assert.strictEqual(res2.success, true, 'Subsequent task must succeed cleanly despite previous failure');
+  });
+
   // Clean up test log directory
   try {
     fs.rmSync(testLogsDir, { recursive: true, force: true });

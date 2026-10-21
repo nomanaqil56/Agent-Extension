@@ -319,14 +319,26 @@ class PermissionManager {
         // Check for blocked malicious patterns
         const blockedPatterns = this.config.security?.blockedShellPatterns || [];
         for (const pattern of blockedPatterns) {
-          if (new RegExp(pattern, 'i').test(cmd)) {
-            return {
-              allowed: false,
-              needsApproval: false,
-              blocked: true,
-              riskLevel: 'forbidden',
-              reason: `Command violates security policy (matched pattern: ${pattern})`
-            };
+          try {
+            if (new RegExp(pattern, 'i').test(cmd)) {
+              return {
+                allowed: false,
+                needsApproval: false,
+                blocked: true,
+                riskLevel: 'forbidden',
+                reason: `Command violates security policy (matched pattern: ${pattern})`
+              };
+            }
+          } catch (e) {
+            if (cmd.toLowerCase().includes(String(pattern).toLowerCase())) {
+              return {
+                allowed: false,
+                needsApproval: false,
+                blocked: true,
+                riskLevel: 'forbidden',
+                reason: `Command violates security policy (matched pattern: ${pattern})`
+              };
+            }
           }
         }
 
