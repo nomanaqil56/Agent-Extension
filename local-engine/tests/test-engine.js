@@ -859,6 +859,15 @@ async function runTests() {
       error: new Error('Provider 500 Internal Server Error')
     });
     assert.strictEqual(hybridFallback.allowed, true, 'Hybrid balanced policy authorizes autonomous fallback on error');
+
+    // 9. Privacy violation error -> NEVER fall back under ANY mode, even if allowFallbackOnMissingCredentials is true!
+    orchestrator.updateConfig({ allowFallbackOnMissingCredentials: true });
+    const privacyViolationFail = orchestrator.canFallbackOnProviderError({
+      requestedProvider: 'hybrid',
+      activePolicy: 'balanced',
+      error: new Error('Privacy-First Policy Violation: Payload contains protected local data')
+    });
+    assert.strictEqual(privacyViolationFail.allowed, false, 'Privacy violation must NEVER fall back to another provider');
   });
 
   // 29. Orchestrator ReAct Loop: Provider Error Halts Task in Manual Mode (P0 — 3)
@@ -1070,6 +1079,42 @@ async function runTests() {
     assert.ok(typeof notepadBin === 'string' && notepadBin.length > 0);
     const gitBin = dt.resolveApplicationBinary('git');
     assert.ok(typeof gitBin === 'string' && gitBin.length > 0);
+  });
+
+  // 35. Hybrid Router: Task classification handles context sensitivity & visual context
+  await test('Hybrid Router: Task classification handles context sensitivity & visual context', async () => {
+    const HybridRouter = require('../src/agent/providers/router');
+    const router = new HybridRouter();
+
+    const c1 = router.classifyTask('Ordinary text task', { isSensitive: true });
+    assert.strictEqual(c1.isSensitive, true, 'isSensitive must be detected from context');
+
+    const c2 = router.classifyTask('Ordinary text task', { containsCredentials: true });
+    assert.strictEqual(c2.isSensitive, true, 'containsCredentials must trigger isSensitive');
+
+    const c3 = router.classifyTask('Ordinary text task', { screenshot: 'data:image/png;base64,...' });
+    assert.strictEqual(c3.hasScreenshotVisual, true, 'hasScreenshotVisual must be detected from context');
+
+    const c4 = router.classifyTask('Ordinary text task', { visualContext: '...' });
+    assert.strictEqual(c4.hasScreenshotVisual, true, 'visualContext must trigger hasScreenshotVisual');
+  });
+
+  // 36. Emergency Coordinator: Pre-exited process confirmed immediately without redundant kills
+  await test('Emergency Coordinator: Pre-exited process confirmed immediately without redundant kills', async () => {
+    const EmergencyCoordinator = require('../src/security/emergency');
+    const coord = new EmergencyCoordinator();
+
+    // Use a non-existent PID that is guaranteed dead
+    const fakeRecord = {
+      process: null,
+      command: 'echo pre-exited',
+      startTime: Date.now(),
+      state: 'running',
+      exitCode: 0
+    };
+
+    const result = await coord.terminateProcessWithObservation(99999999, fakeRecord, 200);
+    assert.strictEqual(result.state, 'confirmed', 'Dead process should be immediately confirmed');
   });
 
   // Clean up test log directory

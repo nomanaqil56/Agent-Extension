@@ -332,9 +332,19 @@ function validateRequestOrigin(origin) {
 
   // Check browser extension origins
   if (lower.startsWith('chrome-extension://') || lower.startsWith('moz-extension://')) {
+    // Extract extension ID (strip scheme and trailing path/query/fragment)
+    const extId = lower.replace(/^(chrome|moz)-extension:\/\//, '').split('/')[0].split('?')[0].split('#')[0];
+
+    // Reject malformed extension IDs
+    if (!extId || !/^[a-z0-9_\-\.\@{}]{4,64}$/i.test(extId)) {
+      return {
+        allowed: false,
+        reason: `CORS policy: Malformed or invalid extension ID in origin "${origin}".`
+      };
+    }
+
     const allowed = getAllowedExtensionIds();
     if (allowed.length > 0) {
-      const extId = lower.replace(/^(chrome|moz)-extension:\/\//, '').split('/')[0];
       if (allowed.includes(extId)) {
         return { allowed: true, reason: 'Allowed extension origin' };
       }
@@ -343,8 +353,18 @@ function validateRequestOrigin(origin) {
         reason: `CORS policy: Extension origin "${origin}" is not in the allowedExtensionIds list.`
       };
     }
+
+    // In production mode, an empty allowlist must NEVER automatically trust arbitrary extensions
+    const isProduction = process.env.NODE_ENV === 'production' || config.environment === 'production';
+    if (isProduction) {
+      return {
+        allowed: false,
+        reason: 'CORS policy: In production mode, extension origins must be explicitly configured in allowedExtensionIds.'
+      };
+    }
+
     // Safe & documented behavior for empty allowlist in development:
-    // When no explicit allowlist is configured, extension schemes (chrome-extension://, moz-extension://)
+    // When no explicit allowlist is configured in development, extension schemes (chrome-extension://, moz-extension://)
     // are permitted for developer unpack/sideloading convenience, while untrusted web origins remain strictly blocked.
     return { allowed: true, reason: 'Development extension scheme permitted (empty allowlist)' };
   }
@@ -1124,6 +1144,8 @@ module.exports = {
   PAIRING_CODE,
   isLoopbackAddress,
   validateLoopbackRequest,
+  validateRequestOrigin,
+  getAllowedExtensionIds,
   writeAtomicJsonSync
 };
 

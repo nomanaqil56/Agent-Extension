@@ -557,6 +557,51 @@ async function runE2ETest() {
     assert.strictEqual(wsUntrustedRejected, true, 'WebSocket upgrade with untrusted origin must be rejected');
     console.log('  ✓ WebSocket upgrade rejects untrusted origin');
 
+    // 6h. Malformed extension origin ID rejected with 403
+    const malformedExtRes = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/health',
+      method: 'GET',
+      headers: {
+        Origin: 'chrome-extension://..%2f../malicious'
+      }
+    });
+    assert.strictEqual(malformedExtRes.statusCode, 403, 'Malformed extension origin ID must be rejected with 403');
+    assert.ok(malformedExtRes.body.error.includes('Malformed or invalid extension ID'), 'Error must cite malformed ID');
+    console.log('  ✓ Malformed extension origin ID rejected with 403');
+
+    // 6i. Direct origin validation logic in production mode vs development mode
+    const { validateRequestOrigin } = require('../src/server');
+    const origEnv = process.env.NODE_ENV;
+    try {
+      process.env.NODE_ENV = 'production';
+      // When allowlist is empty in production mode, arbitrary extension origins are rejected
+      delete process.env.ALLOWED_EXTENSION_IDS;
+      // Temporarily clear allowlist
+      await httpRequest({
+        hostname: '127.0.0.1',
+        port: TEST_PORT,
+        path: '/config',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${TEST_TOKEN}`
+        }
+      }, { allowedExtensionIds: [] });
+
+      const prodCheck = validateRequestOrigin('chrome-extension://somearbitraryextensionid123');
+      assert.strictEqual(prodCheck.allowed, false, 'Production mode must reject arbitrary extension origins with empty allowlist');
+      assert.ok(prodCheck.reason.includes('production mode'), 'Reason must cite production mode requirement');
+
+      process.env.NODE_ENV = 'development';
+      const devCheck = validateRequestOrigin('chrome-extension://somearbitraryextensionid123');
+      assert.strictEqual(devCheck.allowed, true, 'Development mode permits extension scheme with empty allowlist');
+    } finally {
+      process.env.NODE_ENV = origEnv;
+    }
+    console.log('  ✓ Production mode strictly enforces extension allowlist');
+
     // --- TEST 7: Failure Injection & Transactional Configuration Persistence (P1 — 6) ---
     console.log('\n[Test 7] Testing Transactional Configuration Persistence & Durability...');
 

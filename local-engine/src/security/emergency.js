@@ -76,6 +76,16 @@ class EmergencyCoordinator {
 
   // Terminate a child process and verify exit via polling
   async terminateProcessWithObservation(pid, record, maxWaitMs = 1500) {
+    if (!this.isProcessAlive(pid)) {
+      record.state = 'confirmed';
+      return {
+        pid,
+        command: record.command,
+        state: 'confirmed',
+        exitCode: record.exitCode
+      };
+    }
+
     record.state = 'termination_requested';
     const isWin = process.platform === 'win32';
 

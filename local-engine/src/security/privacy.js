@@ -77,17 +77,38 @@ class PrivacyEnforcer {
       hasTerminalOutput: false,
       hasProtectedFiles: false,
       hasScreenshotVisual: false,
+      hasSensitiveContext: false,
       detectedItems: []
     };
 
     // 1. Inspect Browser Context
     if (context) {
-      if (context.screenshot || context.visualContext) {
+      const isVisual = Boolean(
+        context.screenshot ||
+        context.visualContext ||
+        context.screenCapture ||
+        context.image ||
+        context.imageData ||
+        context.hasScreenshot
+      );
+
+      if (isVisual) {
         findings.hasScreenshotVisual = true;
-        // Check if context has sensitive flags
         if (context.isSensitive || context.containsCredentials || context.dom?.toLowerCase().includes('password')) {
           findings.detectedItems.push('Screenshot of sensitive browser context');
+        } else {
+          findings.detectedItems.push('Screenshot / visual context data');
         }
+      }
+
+      if (context.isSensitive) {
+        findings.hasSensitiveContext = true;
+        findings.detectedItems.push('Context explicitly flagged as sensitive');
+      }
+
+      if (context.containsCredentials) {
+        findings.hasCredentials = true;
+        findings.detectedItems.push('Context explicitly flagged as containing credentials');
       }
 
       if (context.dom && typeof context.dom === 'string') {
@@ -115,6 +136,20 @@ class PrivacyEnforcer {
 
     // 2. Inspect Conversation Messages (System, User, Assistant, Tool Observations)
     for (const msg of messages) {
+      // Check for multimodal visual parts or image attachments
+      if (Array.isArray(msg.parts)) {
+        for (const part of msg.parts) {
+          if (part && (part.inlineData || part.image_url || part.type === 'image_url' || part.type === 'image')) {
+            findings.hasScreenshotVisual = true;
+            findings.detectedItems.push('Multimodal visual / image part in message');
+          }
+        }
+      }
+      if (msg.image || msg.images || msg.screenshot || msg.visualContext) {
+        findings.hasScreenshotVisual = true;
+        findings.detectedItems.push('Visual context / screenshot data in message object');
+      }
+
       const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content || '');
 
       // Check for credentials
@@ -163,7 +198,9 @@ class PrivacyEnforcer {
                            findings.hasSensitiveDom ||
                            findings.hasClipboardContent ||
                            findings.hasTerminalOutput ||
-                           findings.hasProtectedFiles;
+                           findings.hasProtectedFiles ||
+                           findings.hasScreenshotVisual ||
+                           findings.hasSensitiveContext;
 
     return findings;
   }

@@ -111,7 +111,10 @@ const filesToCompile = [
   'local-engine/src/agent/providers/fallback.js',
   'extension/background/background.js',
   'extension/content/content.js',
+  'extension/sidepanel/sidepanel.js',
   'scripts/setup.js',
+  'local-engine/tests/test-engine.js',
+  'local-engine/tests/test-e2e.js',
   'local-engine/tests/test-privacy.js'
 ];
 

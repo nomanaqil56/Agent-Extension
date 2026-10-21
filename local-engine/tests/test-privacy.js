@@ -119,6 +119,9 @@ async function runPrivacyTests() {
   const ERROR_SENTINEL = 'SENTINEL_LOCAL_PATH_THETA_112299';
   const CONCURRENT_SENTINEL = 'SENTINEL_CONCURRENT_ISOLATION_IOTA_332211';
   const LEAK_TEST_SENTINEL = 'SENTINEL_NEGATIVE_CONTROL_LEAK_KAPPA_776655';
+  const PURE_SCREENSHOT_SENTINEL = 'SENTINEL_PURE_SCREENSHOT_VISUAL_2026_AA';
+  const MULTIMODAL_SENTINEL = 'SENTINEL_MULTIMODAL_IMAGE_PART_2026_BB';
+  const EXPLICIT_SENSITIVE_SENTINEL = 'SENTINEL_EXPLICIT_SENSITIVE_CONTEXT_2026_CC';
 
   // Seed test files
   const testLocalFile = path.join(testDir, 'private_notes.txt');
@@ -535,7 +538,108 @@ async function runPrivacyTests() {
       );
     });
 
-    // 15. Negative Control: Proves that the production Privacy Guard prevents transmission,
+    // 15. Pure screenshot without other sensitive flags
+    await test('Privacy Boundary: Pure screenshot without any other sensitive flags NEVER reaches cloud transport under Privacy-First', async () => {
+      const mockCloud = new MockCloudProvider('gemini');
+      const orchestrator = new AgentOrchestrator(toolRegistry, memoryManager, {
+        ...baseConfig,
+        hybridRoutingPolicy: 'privacy-first',
+        providerInstances: { gemini: mockCloud, openai: mockCloud, anthropic: mockCloud }
+      });
+
+      // Pure screenshot: no password, no sensitive DOM, no file paths
+      await orchestrator.runTask({
+        task: 'View the current webpage visual layout',
+        providerName: 'hybrid',
+        context: {
+          screenshot: `data:image/png;base64,${PURE_SCREENSHOT_SENTINEL}`
+        }
+      });
+
+      console.log(`    [Harness Observation] Outbound cloud requests observed: ${mockCloud.callCount}`);
+      assert.strictEqual(
+        mockCloud.containsSentinel(PURE_SCREENSHOT_SENTINEL),
+        false,
+        'Pure screenshot sentinel MUST NOT reach cloud transport'
+      );
+      assert.strictEqual(mockCloud.callCount, 0, 'Zero cloud calls should occur for screenshot under privacy-first');
+    });
+
+    // 16. Multimodal image part in message
+    await test('Privacy Boundary: Multimodal image part in message NEVER reaches cloud transport under Privacy-First', async () => {
+      const mockCloud = new MockCloudProvider('gemini');
+      const orchestrator = new AgentOrchestrator(toolRegistry, memoryManager, {
+        ...baseConfig,
+        hybridRoutingPolicy: 'privacy-first',
+        providerInstances: { gemini: mockCloud, openai: mockCloud, anthropic: mockCloud }
+      });
+
+      const privacyEnforcer = orchestrator.privacyEnforcer;
+      const check = privacyEnforcer.inspectOutboundPayload({
+        messages: [
+          {
+            role: 'user',
+            parts: [
+              { text: 'Analyze this image' },
+              { inlineData: { mimeType: 'image/png', data: MULTIMODAL_SENTINEL } }
+            ]
+          }
+        ],
+        activePolicy: 'privacy-first',
+        provider: mockCloud,
+        isManual: true,
+        allowFallback: false
+      });
+
+      assert.strictEqual(check.allowed, false, 'Multimodal image payload must be blocked');
+      assert.ok(check.reasons.some(r => r.includes('visual') || r.includes('image')), 'Must detect multimodal visual part');
+    });
+
+    // 17. Context explicitly flagged as sensitive or containing credentials
+    await test('Privacy Boundary: Context explicitly flagged as sensitive or containing credentials is blocked', async () => {
+      const mockCloud = new MockCloudProvider('gemini');
+      const orchestrator = new AgentOrchestrator(toolRegistry, memoryManager, {
+        ...baseConfig,
+        hybridRoutingPolicy: 'privacy-first',
+        providerInstances: { gemini: mockCloud, openai: mockCloud, anthropic: mockCloud }
+      });
+
+      const privacyEnforcer = orchestrator.privacyEnforcer;
+      const check1 = privacyEnforcer.inspectOutboundPayload({
+        messages: [{ role: 'user', content: `Summarize context: ${EXPLICIT_SENSITIVE_SENTINEL}` }],
+        context: { isSensitive: true },
+        activePolicy: 'privacy-first',
+        provider: mockCloud,
+        isManual: true,
+        allowFallback: false
+      });
+      assert.strictEqual(check1.allowed, false, 'context.isSensitive must be blocked under privacy-first');
+
+      const check2 = privacyEnforcer.inspectOutboundPayload({
+        messages: [{ role: 'user', content: 'Process sensitive credentials' }],
+        context: { containsCredentials: true },
+        activePolicy: 'balanced', // Blocked under ALL policies!
+        provider: mockCloud,
+        isManual: true,
+        allowFallback: false
+      });
+      assert.strictEqual(check2.allowed, false, 'context.containsCredentials must be blocked under all policies');
+    });
+
+    // 18. Direct payload inspection calculates hasScreenshotVisual and sets isProtected
+    await test('Privacy Boundary: Direct payload inspection calculates hasScreenshotVisual and sets isProtected', async () => {
+      const PrivacyEnforcer = require('../src/security/privacy');
+      const enforcer = new PrivacyEnforcer();
+
+      const findings = enforcer.analyzePayload({
+        context: { visualContext: 'base64_data_here' }
+      });
+
+      assert.strictEqual(findings.hasScreenshotVisual, true, 'hasScreenshotVisual must be true');
+      assert.strictEqual(findings.isProtected, true, 'findings.isProtected must be true for visual context');
+    });
+
+    // 19. Negative Control: Proves that the production Privacy Guard prevents transmission,
     // and when intentionally bypassed, the harness detects the leak and fails.
     await test('Negative Control: Production privacy guard prevents sentinel from reaching transport, while intentional bypass leaks and fails test', async () => {
       const mockCloud = new MockCloudProvider('gemini');

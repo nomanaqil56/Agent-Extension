@@ -25,6 +25,14 @@ class AgentOrchestrator {
       return { allowed: false, reason: 'Task execution halted or cancelled.' };
     }
 
+    // A privacy block or security violation cannot be bypassed via fallback to another provider
+    if (errMsg.includes('privacy') || errMsg.includes('protected') || errMsg.includes('security block')) {
+      return {
+        allowed: false,
+        reason: `Privacy restriction: ${error.message}. Provider fallback prohibited after privacy block.`
+      };
+    }
+
     const isManual = requestedProvider && requestedProvider.toLowerCase() !== 'hybrid';
     const allowFallback = Boolean(this.config.allowFallbackOnMissingCredentials);
 
@@ -266,15 +274,15 @@ class AgentOrchestrator {
               : (provider.constructor.name !== 'OllamaProvider' && provider.constructor.name !== 'FallbackAgentProvider')));
     const activePolicy = policy || this.config.hybridRoutingPolicy || 'balanced';
 
-    // Enforce Privacy-First at initial outbound boundary: Never transmit local tasks to cloud models
+    // Enforce Privacy-First at initial outbound boundary: Never transmit local tasks or visual context to cloud models
     if (activePolicy === 'privacy-first' && isCloud) {
       const router = new HybridRouter(this.config);
       const classification = router.classifyTask(task, context);
-      if (classification.isLocalOperation || classification.isSensitive) {
+      if (classification.isLocalOperation || classification.isSensitive || classification.hasScreenshotVisual) {
         notify({
           type: 'PROVIDER_SWITCH',
           provider: 'autonomous',
-          reason: 'Privacy-First Policy: Local workspace operation cannot be transmitted to cloud. Transferred to local Autonomous Engine.'
+          reason: 'Privacy-First Policy: Local workspace operation or visual context cannot be transmitted to cloud. Transferred to local Autonomous Engine.'
         });
         notify({
           type: 'AGENT_MESSAGE',

@@ -44,13 +44,25 @@ class HybridRouter {
     const sensitiveKeywords = [
       '.env', 'password', 'token', 'secret', 'id_rsa', 'id_ed25519', 'key', 'credential', 'auth'
     ];
-    const isSensitive = sensitiveKeywords.some(kw => text.includes(kw));
+    const isSensitive = sensitiveKeywords.some(kw => text.includes(kw)) ||
+                        Boolean(context.isSensitive) ||
+                        Boolean(context.containsCredentials);
+
+    const hasScreenshotVisual = Boolean(
+      context.screenshot ||
+      context.visualContext ||
+      context.screenCapture ||
+      context.image ||
+      context.imageData ||
+      context.hasScreenshot
+    );
 
     return {
       isLocalOperation,
       isBrowserOperation,
       isComplexReasoning,
       isSensitive,
+      hasScreenshotVisual,
       hasBrowserContext: Boolean(context.page || context.dom)
     };
   }
@@ -111,8 +123,8 @@ class HybridRouter {
     // 1. Explicit Non-Hybrid Manual Provider Selection
     // In Manual mode: strictly respect chosen provider; do NOT silently substitute Autonomous Engine unless fallback is explicitly enabled!
     if (requested !== 'hybrid') {
-      // In Privacy-First mode, cloud models are strictly forbidden from receiving local operations or private data
-      if (policy === 'privacy-first' && (classification.isLocalOperation || classification.isSensitive)) {
+      // In Privacy-First mode, cloud models are strictly forbidden from receiving local operations, visual context, or private data
+      if (policy === 'privacy-first' && (classification.isLocalOperation || classification.isSensitive || classification.hasScreenshotVisual)) {
         if (['gemini', 'claude', 'anthropic', 'openai'].includes(requested)) {
           return {
             provider: null,
@@ -120,7 +132,7 @@ class HybridRouter {
             requestedProvider: requested,
             policy: 'privacy-first',
             blocked: true,
-            error: `Privacy-First Policy Violation: Task contains local files or private operations and cannot be transmitted to cloud provider "${requested}". Select Ollama or Autonomous Engine, or adjust your routing policy.`,
+            error: `Privacy-First Policy Violation: Task contains local files, visual context, or private operations and cannot be transmitted to cloud provider "${requested}". Select Ollama or Autonomous Engine, or adjust your routing policy.`,
             fallbackReason: 'Blocked outbound cloud transmission of local private data under Privacy-First policy.'
           };
         }
@@ -258,7 +270,7 @@ class HybridRouter {
     // Policy A: Privacy-First
     // Strict isolation: Local private files, commands, and code are NEVER sent to cloud models.
     if (policy === 'privacy-first') {
-      if (classification.isLocalOperation || classification.isSensitive) {
+      if (classification.isLocalOperation || classification.isSensitive || classification.hasScreenshotVisual) {
         if (effectiveConfig.preferLocalOllama || effectiveConfig.ollamaUrl) {
           return {
             provider: new OllamaProvider(availability.ollama.baseUrl, availability.ollama.model),
@@ -267,7 +279,7 @@ class HybridRouter {
             policy: 'privacy-first',
             isFallback: false,
             model: availability.ollama.model,
-            reason: 'Privacy-First Policy: Local workspace content routed to local Ollama LLM.'
+            reason: 'Privacy-First Policy: Local workspace or visual context content routed to local Ollama LLM.'
           };
         }
         return {
