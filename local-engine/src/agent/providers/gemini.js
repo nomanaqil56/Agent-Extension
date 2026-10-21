@@ -5,6 +5,9 @@ class GeminiProvider {
     this.name = 'gemini';
     this.apiKey = apiKey;
     this.model = model || 'gemini-2.0-flash';
+    this.isLocal = false;
+    this.isRemote = true;
+    this.category = 'cloud';
     this.supportsTools = true;
     this.supportsStreaming = false;
   }

@@ -176,7 +176,7 @@ if (!AUTH_TOKEN) {
   AUTH_TOKEN = crypto.randomBytes(32).toString('hex');
   secrets.authToken = AUTH_TOKEN;
   persistSecretsFile();
-  console.log(`[Server] Generated secure persistent token in .secrets.json: ${AUTH_TOKEN.slice(0, 8)}...`);
+  console.log('[Server] Secure persistent authentication token initialized in .secrets.json.');
 }
 
 // Ephemeral pairing state with entropy, 5-minute expiry, lockout, and single-use consumption
@@ -308,6 +308,10 @@ const orchestrator = new AgentOrchestrator(toolRegistry, memoryManager, { ...con
 const app = express();
 
 // Restrict CORS strictly to extension origins and local loopback (Section 4.3)
+const allowedExtIds = process.env.ALLOWED_EXTENSION_IDS
+  ? process.env.ALLOWED_EXTENSION_IDS.split(',').map(s => s.trim()).filter(Boolean)
+  : (Array.isArray(config.allowedExtensionIds) ? config.allowedExtensionIds : []);
+
 app.use(cors({
   origin: (origin, callback) => {
     // Allow local CLI/scripts/tests with no origin header
@@ -322,10 +326,10 @@ app.use(cors({
 
     // Check browser extension origins
     if (lower.startsWith('chrome-extension://') || lower.startsWith('moz-extension://')) {
-      // If specific extension IDs are configured, restrict to them
-      if (Array.isArray(config.allowedExtensionIds) && config.allowedExtensionIds.length > 0) {
+      // If specific extension IDs are configured, restrict strictly to them
+      if (allowedExtIds.length > 0) {
         const extId = lower.replace(/^(chrome|moz)-extension:\/\//, '').split('/')[0];
-        if (config.allowedExtensionIds.includes(extId)) {
+        if (allowedExtIds.includes(extId)) {
           return callback(null, true);
         }
         return callback(new Error(`CORS policy: Extension origin "${origin}" is not in the allowedExtensionIds list.`));
@@ -338,6 +342,14 @@ app.use(cors({
   },
   credentials: true
 }));
+
+// Explicit error handler for CORS policy rejections (deliberate 403 Forbidden with structured JSON)
+app.use((err, req, res, next) => {
+  if (err && err.message && err.message.includes('CORS policy:')) {
+    return res.status(403).json({ error: err.message });
+  }
+  next(err);
+});
 
 app.use(express.json({ limit: '2mb' }));
 
@@ -499,6 +511,10 @@ app.post('/config', authenticateHttp, (req, res) => {
       allowFallbackOnMissingCredentials
     } = req.body || {};
 
+    // Create candidate staging objects to ensure transactional behavior
+    const candidateConfig = { ...config };
+    const candidateSecrets = { ...secrets };
+
     const targetProvider = activeProvider !== undefined ? activeProvider : selectedProvider;
 
     // 1. Validate Provider Enum
@@ -512,7 +528,7 @@ app.post('/config', authenticateHttp, (req, res) => {
           error: `Invalid provider "${targetProvider}". Supported providers: hybrid, gemini, anthropic, openai, ollama, autonomous.`
         });
       }
-      config.activeProvider = targetProvider.toLowerCase().trim();
+      candidateConfig.activeProvider = targetProvider.toLowerCase().trim();
     }
 
     // 2. Validate Routing Policy Enum
@@ -523,7 +539,7 @@ app.post('/config', authenticateHttp, (req, res) => {
           error: `Invalid hybridRoutingPolicy "${hybridRoutingPolicy}". Supported policies: balanced, privacy-first, cloud-preferred, manual.`
         });
       }
-      config.hybridRoutingPolicy = hybridRoutingPolicy.toLowerCase().trim();
+      candidateConfig.hybridRoutingPolicy = hybridRoutingPolicy.toLowerCase().trim();
     }
 
     // 3. Validate Ollama URL
@@ -537,7 +553,7 @@ app.post('/config', authenticateHttp, (req, res) => {
         if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
           return res.status(400).json({ error: 'ollamaUrl must use http or https protocol.' });
         }
-        config.ollamaUrl = trimmedUrl;
+        candidateConfig.ollamaUrl = trimmedUrl;
       } catch (urlErr) {
         return res.status(400).json({ error: `Invalid ollamaUrl format: "${trimmedUrl}"` });
       }
@@ -551,13 +567,13 @@ app.post('/config', authenticateHttp, (req, res) => {
       if (!/^[a-zA-Z0-9_\-\.:]+$/.test(ollamaModel.trim())) {
         return res.status(400).json({ error: 'ollamaModel contains invalid characters.' });
       }
-      config.ollamaModel = ollamaModel.trim();
+      candidateConfig.ollamaModel = ollamaModel.trim();
     }
 
     // 5. Booleans
-    if (preferLocalOllama !== undefined) config.preferLocalOllama = Boolean(preferLocalOllama);
+    if (preferLocalOllama !== undefined) candidateConfig.preferLocalOllama = Boolean(preferLocalOllama);
     if (allowFallbackOnMissingCredentials !== undefined) {
-      config.allowFallbackOnMissingCredentials = Boolean(allowFallbackOnMissingCredentials);
+      candidateConfig.allowFallbackOnMissingCredentials = Boolean(allowFallbackOnMissingCredentials);
     }
 
     // 6. Update secret keys with strict validation and explicit semantics:
@@ -570,8 +586,10 @@ app.post('/config', authenticateHttp, (req, res) => {
       if (val === undefined) return;
       if (typeof val === 'string' && val.includes('••••')) return;
       if (val === null || val === '') {
-        secrets[key] = '';
-        secretsChanged = true;
+        if (candidateSecrets[key] !== '') {
+          candidateSecrets[key] = '';
+          secretsChanged = true;
+        }
       } else if (typeof val === 'string') {
         const trimmed = val.trim();
         if (trimmed.length > 512) {
@@ -580,8 +598,8 @@ app.post('/config', authenticateHttp, (req, res) => {
         if (/[\x00-\x1F\x7F]/.test(trimmed)) {
           throw new Error(`API key for ${key} contains invalid control characters.`);
         }
-        if (trimmed.length > 0) {
-          secrets[key] = trimmed;
+        if (trimmed.length > 0 && candidateSecrets[key] !== trimmed) {
+          candidateSecrets[key] = trimmed;
           secretsChanged = true;
         }
       } else {
@@ -593,15 +611,56 @@ app.post('/config', authenticateHttp, (req, res) => {
     handleSecretField('anthropicApiKey', anthropicApiKey ?? anthropicKey);
     handleSecretField('openaiApiKey', openaiApiKey ?? openAiKey ?? openaiKey);
 
+    // Transactional durability phase: Persist to disk before mutating memory state
+    let secretsPersisted = false;
     if (secretsChanged) {
-      persistSecretsFile();
+      try {
+        writeAtomicJsonSync(secretsPath, candidateSecrets, 0o600);
+        secretsPersisted = true;
+      } catch (secErr) {
+        return res.status(500).json({
+          error: `Failed to persist credentials: ${secErr.message}. No settings were modified.`
+        });
+      }
     }
+
+    // Prepare non-secret config to save
+    const toSaveConfig = {
+      port: PORT,
+      host: HOST,
+      activeProvider: candidateConfig.activeProvider || 'hybrid',
+      hybridRoutingPolicy: candidateConfig.hybridRoutingPolicy || 'balanced',
+      ollamaUrl: candidateConfig.ollamaUrl || 'http://localhost:11434',
+      ollamaModel: candidateConfig.ollamaModel || 'llama3',
+      preferLocalOllama: Boolean(candidateConfig.preferLocalOllama),
+      allowFallbackOnMissingCredentials: Boolean(candidateConfig.allowFallbackOnMissingCredentials),
+      approvedDirectories: permissionManager.getApprovedDirectories(),
+      approvedApplications: candidateConfig.approvedApplications || ['code', 'notepad', 'calc', 'git'],
+      security: candidateConfig.security || config.security
+    };
+
+    try {
+      writeAtomicJsonSync(configPath, toSaveConfig, 0o644);
+    } catch (cfgErr) {
+      // Rollback secrets file if previously written
+      if (secretsPersisted) {
+        try {
+          writeAtomicJsonSync(secretsPath, secrets, 0o600);
+        } catch (rbErr) {
+          console.error('[Server] Secret rollback failed:', rbErr.message);
+        }
+      }
+      return res.status(500).json({
+        error: `Failed to persist configuration file: ${cfgErr.message}. Changes were rolled back.`
+      });
+    }
+
+    // Both persistence writes succeeded: Commit candidate states to in-memory runtime
+    config = candidateConfig;
+    secrets = candidateSecrets;
 
     // Dynamically update orchestrator config with merged settings and credentials
     orchestrator.updateConfig({ ...config, ...secrets });
-
-    // Persist updated non-secret configuration
-    persistConfigFile();
 
     auditLogger.log({
       action: 'SETTINGS_CONFIGURED',
@@ -728,11 +787,23 @@ app.post('/emergency-stop', authenticateHttp, async (req, res) => {
   res.json(result);
 });
 
+app.post('/emergency-stop/reset', authenticateHttp, (req, res) => {
+  emergencyCoordinator.resetHalt();
+  res.json({ success: true, halted: false, message: 'Emergency stop halt state cleared successfully.' });
+});
+
 app.post('/task', authenticateHttp, async (req, res) => {
   const { task, provider } = req.body;
   if (!task) return res.status(400).json({ error: 'Task is required' });
 
-  emergencyCoordinator.resetHalt();
+  // Emergency stop is an intentional safety control: A new task must NOT automatically clear the halt
+  if (emergencyCoordinator.isEmergencyHalted()) {
+    return res.status(409).json({
+      error: 'Emergency Stop is currently active. You must explicitly reset the emergency stop before starting a new task.',
+      halted: true
+    });
+  }
+
   const abortController = emergencyCoordinator.createAbortController();
   try {
     const result = await orchestrator.runTask({
@@ -875,10 +946,33 @@ wss.on('connection', (ws, req) => {
           }));
           break;
 
-        case 'USER_TASK': {
+        case 'EMERGENCY_RESET':
+        case 'RESET_HALT':
+          console.log('[Server] Received Emergency Stop Reset signal');
           emergencyCoordinator.resetHalt();
-          currentTaskAbort = emergencyCoordinator.createAbortController();
+          ws.send(JSON.stringify({
+            type: 'EMERGENCY_RESET',
+            halted: false,
+            message: 'Emergency stop state cleared.'
+          }));
+          break;
+
+        case 'USER_TASK': {
           const taskConversationId = msg.conversationId || null;
+
+          // Prevent new execution while Emergency Stop is active
+          if (emergencyCoordinator.isEmergencyHalted()) {
+            ws.send(JSON.stringify({
+              type: 'TASK_COMPLETE',
+              conversationId: taskConversationId,
+              success: false,
+              halted: true,
+              summary: '🛑 Task rejected: Emergency Stop is currently active. You must explicitly reset the emergency stop before starting a new task.'
+            }));
+            break;
+          }
+
+          currentTaskAbort = emergencyCoordinator.createAbortController();
           try {
             await orchestrator.runTask({
               task: msg.task,

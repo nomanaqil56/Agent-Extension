@@ -110,18 +110,21 @@ const filesToCompile = [
   'local-engine/src/agent/providers/fallback.js',
   'extension/background/background.js',
   'extension/content/content.js',
-  'scripts/setup.js'
+  'scripts/setup.js',
+  'local-engine/tests/test-privacy.js'
 ];
 
 filesToCompile.forEach(relPath => {
   const fullPath = path.join(root, relPath);
-  if (fs.existsSync(fullPath)) {
-    try {
-      execSync(`node -c "${fullPath}"`, { stdio: 'pipe' });
-      check(`Syntax OK: ${relPath}`, true);
-    } catch (e) {
-      check(`Syntax OK: ${relPath}`, false, e.message);
-    }
+  if (!fs.existsSync(fullPath)) {
+    check(`Required source file exists: ${relPath}`, false, 'Required file is missing');
+    return;
+  }
+  try {
+    execSync(`node -c "${fullPath}"`, { stdio: 'pipe' });
+    check(`Syntax OK: ${relPath}`, true);
+  } catch (e) {
+    check(`Syntax OK: ${relPath}`, false, e.message);
   }
 });
 
@@ -138,9 +141,9 @@ try {
 console.log('\n[5] Running Automated End-to-End WebSocket & Auth Suite:');
 try {
   execSync('npm run test:e2e', { cwd: path.join(root, 'local-engine'), stdio: 'inherit' });
-  check('E2E WebSocket, Pairing, and Settings Suite passed', true);
+  check('E2E WebSocket, Pairing, Settings, and Emergency Stop Suite passed', true);
 } catch (e) {
-  check('E2E WebSocket, Pairing, and Settings Suite', false, e.message);
+  check('E2E WebSocket, Pairing, Settings, and Emergency Stop Suite', false, e.message);
 }
 
 // 6. Automated Privacy-First Boundary Sentinel Tests
@@ -172,10 +175,18 @@ if (process.env.OPENAI_API_KEY) {
   skip('Live OpenAI Cloud Inference', 'OPENAI_API_KEY environment variable not set; automated tests use mock boundary');
 }
 
-// Check Ollama service availability
+// Check Ollama service availability and validate configured model
 try {
-  const ollamaCheck = execSync('curl -s http://127.0.0.1:11434/api/tags', { timeout: 1500, stdio: 'pipe' });
-  check('Live local Ollama daemon online and responsive', true);
+  const ollamaRaw = execSync('curl -s http://127.0.0.1:11434/api/tags', { timeout: 1500, stdio: 'pipe' }).toString();
+  const parsedOllama = JSON.parse(ollamaRaw);
+  const models = Array.isArray(parsedOllama?.models) ? parsedOllama.models.map(m => m.name) : [];
+  const configuredModel = 'llama3';
+  const hasModel = models.some(m => m.includes(configuredModel));
+  if (hasModel) {
+    check(`Live Ollama daemon online with model "${configuredModel}"`, true);
+  } else {
+    skip('Live local Ollama model', `Ollama running on :11434, but model "${configuredModel}" not installed (run 'ollama pull ${configuredModel}')`);
+  }
 } catch (e) {
   skip('Live local Ollama daemon', 'Ollama is not running locally on port 11434 (offline fallback active)');
 }

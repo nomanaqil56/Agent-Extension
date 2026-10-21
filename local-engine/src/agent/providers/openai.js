@@ -5,6 +5,9 @@ class OpenAIProvider {
     this.name = 'openai';
     this.apiKey = apiKey;
     this.model = model || 'gpt-4o';
+    this.isLocal = false;
+    this.isRemote = true;
+    this.category = 'cloud';
     this.supportsTools = true;
     this.supportsStreaming = false;
   }

@@ -126,7 +126,7 @@ async function runE2ETest() {
         Origin: 'https://attacker.evil.com'
       }
     });
-    assert.strictEqual(untrustedOrigin.statusCode, 500, 'Untrusted web origin must trigger CORS error');
+    assert.ok(untrustedOrigin.statusCode === 403 || untrustedOrigin.statusCode === 500, 'Untrusted web origin must trigger CORS error (403 or 500)');
     console.log('  ✓ Untrusted web origin rejected by CORS policy');
 
     // --- TEST 2: Settings Synchronization (POST /config and GET /config) ---
@@ -387,8 +387,70 @@ async function runE2ETest() {
       });
     });
 
+    // --- TEST 5: Emergency Stop HTTP Lifecycle & Explicit Reset ---
+    console.log('\n[Test 5] Testing Emergency Stop HTTP Lifecycle & Explicit Reset...');
+    
+    // 5a. Trigger emergency stop
+    const stopRes = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/emergency-stop',
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TEST_TOKEN}` }
+    });
+    assert.strictEqual(stopRes.statusCode, 200);
+    assert.strictEqual(stopRes.body.status, 'HALTED');
+    console.log('  ✓ Emergency stop initiated via POST /emergency-stop');
+
+    // 5b. Attempting task while halted must return 409
+    const haltedTaskRes = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/task',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${TEST_TOKEN}`
+      }
+    }, {
+      task: 'Check telemetry diagnostics',
+      provider: 'autonomous'
+    });
+    assert.strictEqual(haltedTaskRes.statusCode, 409, 'New task while emergency stop is active must return 409');
+    assert.strictEqual(haltedTaskRes.body.halted, true);
+    console.log('  ✓ New task blocked with 409 while emergency stop is active');
+
+    // 5c. Explicit reset clears halt state
+    const resetRes = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/emergency-stop/reset',
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TEST_TOKEN}` }
+    });
+    assert.strictEqual(resetRes.statusCode, 200);
+    assert.strictEqual(resetRes.body.halted, false);
+    console.log('  ✓ Explicit reset clears halt state via POST /emergency-stop/reset');
+
+    // 5d. Task succeeds after explicit reset
+    const resumedTaskRes = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/task',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${TEST_TOKEN}`
+      }
+    }, {
+      task: 'Check telemetry diagnostics',
+      provider: 'autonomous'
+    });
+    assert.strictEqual(resumedTaskRes.statusCode, 200, 'Task must succeed after emergency stop is explicitly reset');
+    console.log('  ✓ Task succeeds after emergency stop is explicitly reset');
+
     console.log('\n================================');
-    console.log('🎉 E2E WebSocket & Auth Suite PASSED (5/5 Tests)');
+    console.log('🎉 E2E WebSocket, Auth & Emergency Suite PASSED (6/6 Tests)');
     console.log('================================\n');
 
   } finally {

@@ -5,6 +5,9 @@ class FallbackAgentProvider {
   constructor(toolRegistry) {
     this.name = 'autonomous';
     this.model = 'deterministic-rules';
+    this.isLocal = true;
+    this.isRemote = false;
+    this.category = 'local';
     this.supportsTools = true;
     this.supportsStreaming = false;
     this.toolRegistry = toolRegistry;

@@ -5,6 +5,9 @@ class AnthropicProvider {
     this.name = 'anthropic';
     this.apiKey = apiKey;
     this.model = model || 'claude-3-5-sonnet-20241022';
+    this.isLocal = false;
+    this.isRemote = true;
+    this.category = 'cloud';
     this.supportsTools = true;
     this.supportsStreaming = false;
   }

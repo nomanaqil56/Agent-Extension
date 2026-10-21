@@ -1,6 +1,7 @@
 // Antigravity Local Agent Engine - Privacy-First Outbound Boundary Regression Tests
 // Validates that local files, terminal output, clipboard content, sensitive credentials,
 // and tool outputs NEVER leave the local execution boundary or appear in outbound cloud model requests.
+// Includes negative-control tests verifying that the test harness actively detects leaks.
 
 const assert = require('assert');
 const path = require('path');
@@ -17,13 +18,19 @@ const HybridRouter = require('../src/agent/providers/router');
 class MockCloudProvider {
   constructor(name = 'gemini') {
     this.name = name;
+    this.model = 'mock-cloud-model';
+    this.isLocal = false;
+    this.isRemote = true;
+    this.category = 'cloud';
+    this.supportsTools = true;
+    this.supportsStreaming = false;
     this.recordedOutboundPayloads = [];
     this.recordedMessages = [];
     this.callCount = 0;
   }
 
   async checkHealth() {
-    return { healthy: true, provider: this.name, model: 'mock-cloud-model' };
+    return { healthy: true, provider: this.name, model: this.model };
   }
 
   async generateStep(messages, tools = []) {
@@ -32,10 +39,10 @@ class MockCloudProvider {
     this.recordedOutboundPayloads.push({
       step: this.callCount,
       messages: JSON.parse(JSON.stringify(messages)),
+      tools: tools.map(t => t.name || t),
       timestamp: Date.now()
     });
 
-    // Return a final answer or tool call
     return {
       type: 'message',
       content: 'Mock cloud response'
@@ -73,7 +80,7 @@ async function runPrivacyTests() {
   }
 
   const testLogsDir = path.join(testDir, 'logs');
-  const config = {
+  const baseConfig = {
     port: 3721,
     activeProvider: 'hybrid',
     hybridRoutingPolicy: 'privacy-first',
@@ -87,7 +94,7 @@ async function runPrivacyTests() {
     }
   };
 
-  const permManager = new PermissionManager(config);
+  const permManager = new PermissionManager(baseConfig);
   const auditLogger = new AuditLogger(testLogsDir);
   const emergencyCoord = new EmergencyCoordinator(permManager, auditLogger);
   const mockServerContext = { getExtensionClient: () => null };
@@ -99,7 +106,7 @@ async function runPrivacyTests() {
   const CLIPBOARD_SENTINEL = 'SECRET_CLIPBOARD_SENTINEL_BETA_554433';
   const TERMINAL_SENTINEL = 'SECRET_TERMINAL_SENTINEL_GAMMA_112233';
   const SENSITIVE_ENV_SENTINEL = 'SECRET_ENV_TOKEN_DELTA_778899';
-  const BROWSER_DOM_SENTINEL = 'SECRET_BROWSER_PAGE_SENTINEL_EPSILON_445566';
+  const LEAK_TEST_SENTINEL = 'DELIBERATE_TEST_SENTINEL_LEAK_PROBE_998877';
 
   // Seed test files
   const testLocalFile = path.join(testDir, 'private_notes.txt');
@@ -113,8 +120,9 @@ async function runPrivacyTests() {
     await test('Privacy Boundary: Local file content with sentinel NEVER sent to cloud provider', async () => {
       const mockCloud = new MockCloudProvider('gemini');
       const orchestrator = new AgentOrchestrator(toolRegistry, memoryManager, {
-        ...config,
-        hybridRoutingPolicy: 'privacy-first'
+        ...baseConfig,
+        hybridRoutingPolicy: 'privacy-first',
+        providerInstances: { gemini: mockCloud, openai: mockCloud, anthropic: mockCloud }
       });
 
       // Execute task that reads local file
@@ -123,7 +131,7 @@ async function runPrivacyTests() {
         providerName: 'hybrid'
       });
 
-      // Assert: MockCloudProvider received zero calls or zero occurrences of FILE_SENTINEL
+      // Assert: MockCloudProvider received zero occurrences of FILE_SENTINEL
       assert.strictEqual(
         mockCloud.containsSentinel(FILE_SENTINEL),
         false,
@@ -134,13 +142,13 @@ async function runPrivacyTests() {
     // 2. Clipboard Reading under Privacy-First
     await test('Privacy Boundary: Clipboard content with sentinel NEVER sent to cloud provider', async () => {
       const mockCloud = new MockCloudProvider('openai');
-
       // Populate clipboard with unique sentinel
       await toolRegistry.desktopTool.clipboardWrite({ text: CLIPBOARD_SENTINEL });
 
       const orchestrator = new AgentOrchestrator(toolRegistry, memoryManager, {
-        ...config,
-        hybridRoutingPolicy: 'privacy-first'
+        ...baseConfig,
+        hybridRoutingPolicy: 'privacy-first',
+        providerInstances: { gemini: mockCloud, openai: mockCloud, anthropic: mockCloud }
       });
 
       await orchestrator.runTask({
@@ -159,8 +167,9 @@ async function runPrivacyTests() {
     await test('Privacy Boundary: Terminal command output with sentinel NEVER sent to cloud provider', async () => {
       const mockCloud = new MockCloudProvider('anthropic');
       const orchestrator = new AgentOrchestrator(toolRegistry, memoryManager, {
-        ...config,
-        hybridRoutingPolicy: 'privacy-first'
+        ...baseConfig,
+        hybridRoutingPolicy: 'privacy-first',
+        providerInstances: { gemini: mockCloud, openai: mockCloud, anthropic: mockCloud }
       });
 
       await orchestrator.runTask({
@@ -179,8 +188,9 @@ async function runPrivacyTests() {
     await test('Privacy Boundary: Sensitive credential file (.env) NEVER sent to cloud provider', async () => {
       const mockCloud = new MockCloudProvider('gemini');
       const orchestrator = new AgentOrchestrator(toolRegistry, memoryManager, {
-        ...config,
-        hybridRoutingPolicy: 'privacy-first'
+        ...baseConfig,
+        hybridRoutingPolicy: 'privacy-first',
+        providerInstances: { gemini: mockCloud, openai: mockCloud, anthropic: mockCloud }
       });
 
       await orchestrator.runTask({
@@ -206,8 +216,9 @@ async function runPrivacyTests() {
       });
 
       const orchestrator = new AgentOrchestrator(toolRegistry, memoryManager, {
-        ...config,
-        hybridRoutingPolicy: 'privacy-first'
+        ...baseConfig,
+        hybridRoutingPolicy: 'privacy-first',
+        providerInstances: { gemini: mockCloud }
       });
 
       const notifications = [];
@@ -238,7 +249,7 @@ async function runPrivacyTests() {
     // 6. Manual Cloud Mode Blocked on Local Tasks under Privacy-First
     await test('Privacy Boundary: Manual cloud provider selection BLOCKS local tasks under Privacy-First', async () => {
       const router = new HybridRouter({
-        ...config,
+        ...baseConfig,
         hybridRoutingPolicy: 'privacy-first',
         geminiApiKey: 'mock-gemini-key'
       });
@@ -265,8 +276,9 @@ async function runPrivacyTests() {
       });
 
       const orchestrator = new AgentOrchestrator(toolRegistry, memoryManager, {
-        ...config,
-        hybridRoutingPolicy: 'privacy-first'
+        ...baseConfig,
+        hybridRoutingPolicy: 'privacy-first',
+        providerInstances: { claude: mockCloud }
       });
 
       const notifications = [];
@@ -285,6 +297,54 @@ async function runPrivacyTests() {
         false,
         'Local tool error must not be sent back to cloud model under Privacy-First'
       );
+    });
+
+    // 8. Integration Verification: Cloud provider actually receives outbound payloads when permitted by policy
+    await test('Privacy Harness: Instrumented mock cloud provider receives outbound requests when permitted', async () => {
+      const mockCloud = new MockCloudProvider('gemini');
+      const orchestrator = new AgentOrchestrator(toolRegistry, memoryManager, {
+        ...baseConfig,
+        hybridRoutingPolicy: 'cloud-preferred',
+        providerInstances: { gemini: mockCloud }
+      });
+
+      await orchestrator.runTask({
+        task: 'Summarize the history of internet protocols',
+        providerName: 'gemini'
+      });
+
+      assert.ok(mockCloud.callCount > 0, 'Mock cloud provider must receive task when policy permits');
+      assert.ok(mockCloud.recordedOutboundPayloads.length > 0, 'Must record outbound payload structure');
+    });
+
+    // 9. Negative-Control Test: Instrumentation proves that a deliberate sentinel leak is detected
+    await test('Negative Control: Harness detects deliberate sentinel leak and assertion catches it', async () => {
+      const mockCloud = new MockCloudProvider('gemini');
+
+      // Intentionally simulate an outbound payload containing a deliberate test sentinel
+      await mockCloud.generateStep([
+        { role: 'user', content: `Unprotected outbound payload containing ${LEAK_TEST_SENTINEL}` }
+      ]);
+
+      // Assert that mockCloud detected the sentinel
+      assert.strictEqual(
+        mockCloud.containsSentinel(LEAK_TEST_SENTINEL),
+        true,
+        'MockCloudProvider.containsSentinel must return true when a sentinel is present in outbound payload'
+      );
+
+      // Assert that checking absence of this leaked sentinel throws an AssertionError
+      let errorThrown = false;
+      try {
+        assert.strictEqual(
+          mockCloud.containsSentinel(LEAK_TEST_SENTINEL),
+          false,
+          'Expected failure on leaked sentinel'
+        );
+      } catch (assertionErr) {
+        errorThrown = true;
+      }
+      assert.strictEqual(errorThrown, true, 'Harness must fail when a sentinel is leaked to cloud provider');
     });
 
   } finally {

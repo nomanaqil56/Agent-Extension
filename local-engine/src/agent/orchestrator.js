@@ -220,12 +220,16 @@ class AgentOrchestrator {
 
   // --- LLM Multi-step ReAct Loop ---
   async runLlmReActLoop(task, context, provider, notify, abortSignal, policy) {
-    const isCloudProvider = provider.constructor.name !== 'OllamaProvider' &&
-                            provider.constructor.name !== 'FallbackAgentProvider';
+    const isCloud = typeof provider.isLocal === 'boolean'
+      ? !provider.isLocal
+      : (typeof provider.isRemote === 'boolean'
+          ? provider.isRemote
+          : (provider.category ? provider.category === 'cloud' || provider.category === 'remote'
+              : (provider.constructor.name !== 'OllamaProvider' && provider.constructor.name !== 'FallbackAgentProvider')));
     const activePolicy = policy || this.config.hybridRoutingPolicy || 'balanced';
 
     // Enforce Privacy-First at initial outbound boundary: Never transmit local tasks to cloud models
-    if (activePolicy === 'privacy-first' && isCloudProvider) {
+    if (activePolicy === 'privacy-first' && isCloud) {
       const router = new HybridRouter(this.config);
       const classification = router.classifyTask(task, context);
       if (classification.isLocalOperation || classification.isSensitive) {
@@ -340,7 +344,7 @@ class AgentOrchestrator {
             'clipboard_read', 'clipboard_write', 'launch_application', 'get_system_info'
           ];
 
-          if (activePolicy === 'privacy-first' && localContentTools.includes(tool) && isCloudProvider) {
+          if (activePolicy === 'privacy-first' && localContentTools.includes(tool) && isCloud) {
             notify({
               type: 'PROVIDER_SWITCH',
               provider: 'autonomous',

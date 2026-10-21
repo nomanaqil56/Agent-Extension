@@ -744,6 +744,46 @@ async function runTests() {
     assert.strictEqual(replayBlocked, true, 'Replay of resolved approval ID must be rejected');
   });
 
+  // 26. Desktop Zero-Workspace Lockdown: Blocks opening files when no workspaces are approved
+  await test('Desktop Tool: Blocks opening target files when no workspace is configured', async () => {
+    const emptyPM = new PermissionManager({ approvedDirectories: [] });
+    const emptyDesktop = new (require('../src/tools/desktop'))(emptyPM);
+
+    // Attempting to launch notepad with a file path when 0 workspaces configured must reject
+    let blocked = false;
+    try {
+      await emptyDesktop.launchApplication({
+        appName: 'notepad',
+        args: [path.join(__dirname, 'some_file.txt')]
+      });
+    } catch (err) {
+      blocked = err.message.includes('No approved workspaces configured');
+    }
+    assert.strictEqual(blocked, true, 'Clean install with 0 workspaces must deny desktop app opening local files');
+  });
+
+  // 27. Emergency Stop Lifecycle: Halted state blocks new operations and requires explicit reset
+  await test('Emergency Stop Lifecycle: Blocks execution until explicit reset', async () => {
+    await emergencyCoord.emergencyStop();
+    assert.strictEqual(emergencyCoord.isEmergencyHalted(), true);
+
+    let executionBlocked = false;
+    try {
+      await tools.execute('get_system_info', {});
+    } catch (err) {
+      executionBlocked = err.message.includes('Emergency Stop');
+    }
+    assert.strictEqual(executionBlocked, true, 'Must block execution while halted');
+
+    // Explicit reset must clear halt
+    emergencyCoord.resetHalt();
+    assert.strictEqual(emergencyCoord.isEmergencyHalted(), false);
+
+    // Execution allowed again after explicit reset
+    const info = await tools.execute('get_system_info', {});
+    assert.ok(info.result.platform, 'Must allow execution after explicit reset');
+  });
+
   // Clean up test log directory
   try {
     fs.rmSync(testLogsDir, { recursive: true, force: true });

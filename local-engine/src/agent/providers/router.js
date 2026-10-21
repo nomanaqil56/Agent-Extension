@@ -57,6 +57,7 @@ class HybridRouter {
 
   // Check which providers are configured and ready using canonical configuration schema
   getProviderAvailability(config = {}) {
+    const customProviders = config.providerInstances || this.config.providerInstances || {};
     const geminiKey = process.env.GEMINI_API_KEY || config.geminiApiKey || config.geminiKey || config.providers?.gemini?.apiKey;
     const anthropicKey = process.env.ANTHROPIC_API_KEY || config.anthropicApiKey || config.anthropicKey || config.providers?.anthropic?.apiKey;
     const openAiKey = process.env.OPENAI_API_KEY || config.openaiApiKey || config.openAiKey || config.openaiKey || config.providers?.openai?.apiKey;
@@ -64,11 +65,31 @@ class HybridRouter {
     const ollamaModel = config.ollamaModel || config.providers?.ollama?.model || process.env.OLLAMA_MODEL || 'llama3';
 
     return {
-      gemini: { available: Boolean(geminiKey), key: geminiKey, model: config.providers?.gemini?.model || 'gemini-2.0-flash' },
-      anthropic: { available: Boolean(anthropicKey), key: anthropicKey, model: config.providers?.anthropic?.model || 'claude-3-5-sonnet-20241022' },
-      openai: { available: Boolean(openAiKey), key: openAiKey, model: config.providers?.openai?.model || 'gpt-4o' },
-      ollama: { baseUrl: ollamaBaseUrl, model: ollamaModel },
-      hasCloud: Boolean(geminiKey || anthropicKey || openAiKey)
+      gemini: {
+        available: Boolean(customProviders.gemini || geminiKey),
+        key: geminiKey,
+        model: config.providers?.gemini?.model || 'gemini-2.0-flash',
+        instance: customProviders.gemini || null
+      },
+      anthropic: {
+        available: Boolean(customProviders.anthropic || customProviders.claude || anthropicKey),
+        key: anthropicKey,
+        model: config.providers?.anthropic?.model || 'claude-3-5-sonnet-20241022',
+        instance: customProviders.anthropic || customProviders.claude || null
+      },
+      openai: {
+        available: Boolean(customProviders.openai || openAiKey),
+        key: openAiKey,
+        model: config.providers?.openai?.model || 'gpt-4o',
+        instance: customProviders.openai || null
+      },
+      ollama: {
+        baseUrl: ollamaBaseUrl,
+        model: ollamaModel,
+        available: Boolean(customProviders.ollama || ollamaBaseUrl),
+        instance: customProviders.ollama || null
+      },
+      hasCloud: Boolean(customProviders.gemini || customProviders.anthropic || customProviders.claude || customProviders.openai || geminiKey || anthropicKey || openAiKey)
     };
   }
 
@@ -130,7 +151,7 @@ class HybridRouter {
             };
           }
           return {
-            provider: new GeminiProvider(availability.gemini.key, availability.gemini.model),
+            provider: availability.gemini.instance || new GeminiProvider(availability.gemini.key, availability.gemini.model),
             activeProviderName: 'gemini',
             requestedProvider: 'gemini',
             policy: 'manual',
@@ -164,7 +185,7 @@ class HybridRouter {
             };
           }
           return {
-            provider: new AnthropicProvider(availability.anthropic.key, availability.anthropic.model),
+            provider: availability.anthropic.instance || new AnthropicProvider(availability.anthropic.key, availability.anthropic.model),
             activeProviderName: 'anthropic',
             requestedProvider: 'anthropic',
             policy: 'manual',
@@ -197,7 +218,7 @@ class HybridRouter {
             };
           }
           return {
-            provider: new OpenAIProvider(availability.openai.key, availability.openai.model),
+            provider: availability.openai.instance || new OpenAIProvider(availability.openai.key, availability.openai.model),
             activeProviderName: 'openai',
             requestedProvider: 'openai',
             policy: 'manual',
@@ -208,7 +229,7 @@ class HybridRouter {
 
         case 'ollama': {
           return {
-            provider: new OllamaProvider(availability.ollama.baseUrl, availability.ollama.model),
+            provider: availability.ollama.instance || new OllamaProvider(availability.ollama.baseUrl, availability.ollama.model),
             activeProviderName: 'ollama',
             requestedProvider: 'ollama',
             policy: 'manual',
@@ -308,7 +329,7 @@ class HybridRouter {
     // 3. Fallback: No cloud keys configured or local preferred
     if (effectiveConfig.preferLocalOllama) {
       return {
-        provider: new OllamaProvider(availability.ollama.baseUrl, availability.ollama.model),
+        provider: availability.ollama.instance || new OllamaProvider(availability.ollama.baseUrl, availability.ollama.model),
         activeProviderName: 'ollama',
         requestedProvider: 'hybrid',
         policy,
@@ -333,7 +354,7 @@ class HybridRouter {
   selectCloudProvider(availability, policy, reason = '') {
     if (availability.gemini.available) {
       return {
-        provider: new GeminiProvider(availability.gemini.key, availability.gemini.model),
+        provider: availability.gemini.instance || new GeminiProvider(availability.gemini.key, availability.gemini.model),
         activeProviderName: 'gemini',
         requestedProvider: 'hybrid',
         policy,
@@ -345,7 +366,7 @@ class HybridRouter {
 
     if (availability.anthropic.available) {
       return {
-        provider: new AnthropicProvider(availability.anthropic.key, availability.anthropic.model),
+        provider: availability.anthropic.instance || new AnthropicProvider(availability.anthropic.key, availability.anthropic.model),
         activeProviderName: 'anthropic',
         requestedProvider: 'hybrid',
         policy,
@@ -357,7 +378,7 @@ class HybridRouter {
 
     if (availability.openai.available) {
       return {
-        provider: new OpenAIProvider(availability.openai.key, availability.openai.model),
+        provider: availability.openai.instance || new OpenAIProvider(availability.openai.key, availability.openai.model),
         activeProviderName: 'openai',
         requestedProvider: 'hybrid',
         policy,

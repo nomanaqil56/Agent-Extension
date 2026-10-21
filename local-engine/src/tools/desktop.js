@@ -65,13 +65,17 @@ class DesktopTool {
           if (target.startsWith('/') || target.startsWith('-')) {
             throw new Error(`Invalid argument "${target}" for notepad. Switch flags are not permitted.`);
           }
-          // If workspaces are configured, enforce workspace containment
-          if (this.permissionManager && typeof this.permissionManager.isWorkspaceConfigured === 'function') {
-            if (this.permissionManager.isWorkspaceConfigured()) {
-              const resolved = path.resolve(target);
-              if (!this.permissionManager.isPathApproved(resolved)) {
-                throw new Error(`File path "${target}" is outside approved workspaces.`);
-              }
+          // Enforce workspace containment: clean install with zero workspaces MUST block opening files
+          if (this.permissionManager) {
+            const hasWorkspaces = typeof this.permissionManager.isWorkspaceConfigured === 'function'
+              ? this.permissionManager.isWorkspaceConfigured()
+              : (this.permissionManager.approvedDirectories && this.permissionManager.approvedDirectories.size > 0);
+            if (!hasWorkspaces) {
+              throw new Error(`Cannot open file "${target}": No approved workspaces configured.`);
+            }
+            const resolved = path.resolve(target);
+            if (!this.permissionManager.isPathApproved(resolved)) {
+              throw new Error(`File path "${target}" is outside approved workspaces.`);
             }
           }
         }
@@ -88,13 +92,17 @@ class DesktopTool {
             }
             sanitized.push(arg);
           } else {
-            // Path argument
-            if (this.permissionManager && typeof this.permissionManager.isWorkspaceConfigured === 'function') {
-              if (this.permissionManager.isWorkspaceConfigured()) {
-                const resolved = path.resolve(arg);
-                if (!this.permissionManager.isPathApproved(resolved)) {
-                  throw new Error(`Target path "${arg}" is outside approved workspaces.`);
-                }
+            // Path argument: clean install with zero workspaces MUST block opening files
+            if (this.permissionManager) {
+              const hasWorkspaces = typeof this.permissionManager.isWorkspaceConfigured === 'function'
+                ? this.permissionManager.isWorkspaceConfigured()
+                : (this.permissionManager.approvedDirectories && this.permissionManager.approvedDirectories.size > 0);
+              if (!hasWorkspaces) {
+                throw new Error(`Cannot open target path "${arg}": No approved workspaces configured.`);
+              }
+              const resolved = path.resolve(arg);
+              if (!this.permissionManager.isPathApproved(resolved)) {
+                throw new Error(`Target path "${arg}" is outside approved workspaces.`);
               }
             }
             sanitized.push(arg);
@@ -148,6 +156,11 @@ class DesktopTool {
           spawnCmd = 'open';
           spawnArgs = ['-a', 'TextEdit', ...validatedArgs];
         }
+      } else if (process.platform === 'win32' && (binary.endsWith('.cmd') || binary.endsWith('.bat'))) {
+        // Node.js throws EINVAL when spawning .cmd/.bat files with shell:false on Windows (CVE-2024-27980)
+        // Spawn through cmd.exe with structured arguments while keeping execution shell-free (no interpolation)
+        spawnCmd = process.env.ComSpec || 'cmd.exe';
+        spawnArgs = ['/d', '/s', '/c', binary, ...validatedArgs];
       }
 
       // Safe shell-free process launch

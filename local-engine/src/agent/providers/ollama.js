@@ -5,6 +5,9 @@ class OllamaProvider {
     this.name = 'ollama';
     this.baseUrl = (baseUrl || 'http://localhost:11434').replace(/\/$/, '');
     this.model = model || 'llama3.2';
+    this.isLocal = true;
+    this.isRemote = false;
+    this.category = 'local';
     this.supportsTools = true;
     this.supportsStreaming = false;
   }
