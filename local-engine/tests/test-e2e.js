@@ -449,8 +449,167 @@ async function runE2ETest() {
     assert.strictEqual(resumedTaskRes.statusCode, 200, 'Task must succeed after emergency stop is explicitly reset');
     console.log('  ✓ Task succeeds after emergency stop is explicitly reset');
 
+    // --- TEST 6: Extension-Origin & CORS Restrictions (P1 — 4) ---
+    console.log('\n[Test 6] Testing Extension-Origin & CORS Restrictions...');
+
+    // 6a. Set explicit allowed extension ID via POST /config
+    const ALLOWED_EXT_ID = 'testallowedextension123456';
+    const configWithAllowlist = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/config',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${TEST_TOKEN}`
+      }
+    }, {
+      allowedExtensionIds: [ALLOWED_EXT_ID]
+    });
+    assert.strictEqual(configWithAllowlist.statusCode, 200);
+
+    // 6b. Authorized extension origin is permitted
+    const authOriginRes = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/health',
+      method: 'GET',
+      headers: {
+        Origin: `chrome-extension://${ALLOWED_EXT_ID}`
+      }
+    });
+    assert.strictEqual(authOriginRes.statusCode, 200, 'Authorized extension origin must be permitted with 200');
+    console.log('  ✓ Authorized extension origin permitted');
+
+    // 6c. Unauthorized extension origin is rejected with 403
+    const unauthOriginRes = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/health',
+      method: 'GET',
+      headers: {
+        Origin: 'chrome-extension://unauthorizedextensionid999999'
+      }
+    });
+    assert.strictEqual(unauthOriginRes.statusCode, 403, 'Unauthorized extension origin must be rejected with 403');
+    assert.ok(unauthOriginRes.body.error.includes('allowedExtensionIds'), 'Error must cite allowedExtensionIds');
+    console.log('  ✓ Unauthorized extension origin rejected with 403');
+
+    // 6d. Untrusted website origin rejected with 403
+    const websiteOriginRes = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/health',
+      method: 'GET',
+      headers: {
+        Origin: 'https://evil-phishing-site.com'
+      }
+    });
+    assert.strictEqual(websiteOriginRes.statusCode, 403, 'Untrusted web origin must be rejected with 403');
+    console.log('  ✓ Untrusted website origin rejected with 403');
+
+    // 6e. Request without Origin header (CLI/test client) permitted
+    const noOriginRes = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/health',
+      method: 'GET'
+    });
+    assert.strictEqual(noOriginRes.statusCode, 200, 'Request without Origin header must be permitted');
+    console.log('  ✓ Request without Origin header permitted');
+
+    // 6f. Authentication independent of CORS: authorized origin without auth token still fails with 401
+    const corsAuthIndependent = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/workspaces',
+      method: 'GET',
+      headers: {
+        Origin: `chrome-extension://${ALLOWED_EXT_ID}`
+      }
+    });
+    assert.strictEqual(corsAuthIndependent.statusCode, 401, 'Protected endpoint without auth token must return 401 even from authorized origin');
+    console.log('  ✓ Authentication is strictly independent of CORS');
+
+    // 6g. WebSocket Upgrade with untrusted origin rejected
+    let wsUntrustedRejected = false;
+    try {
+      await new Promise((resolve, reject) => {
+        const badWs = new WebSocket(`ws://127.0.0.1:${TEST_PORT}`, {
+          headers: { Origin: 'https://malicious-web-app.org' }
+        });
+        badWs.on('open', () => {
+          badWs.close();
+          reject(new Error('WebSocket with malicious origin should not open'));
+        });
+        badWs.on('error', () => {
+          resolve();
+        });
+        badWs.on('unexpected-response', (req, res) => {
+          assert.strictEqual(res.statusCode, 403);
+          resolve();
+        });
+      });
+      wsUntrustedRejected = true;
+    } catch (e) {
+      wsUntrustedRejected = false;
+    }
+    assert.strictEqual(wsUntrustedRejected, true, 'WebSocket upgrade with untrusted origin must be rejected');
+    console.log('  ✓ WebSocket upgrade rejects untrusted origin');
+
+    // --- TEST 7: Failure Injection & Transactional Configuration Persistence (P1 — 6) ---
+    console.log('\n[Test 7] Testing Transactional Configuration Persistence & Durability...');
+
+    // 7a. Verify durability: Saved configuration matches on disk
+    const durableUpdate = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/config',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${TEST_TOKEN}`
+      }
+    }, {
+      hybridRoutingPolicy: 'cloud-preferred',
+      ollamaModel: 'mistral'
+    });
+    assert.strictEqual(durableUpdate.statusCode, 200);
+
+    // Verify disk content directly
+    const diskContent = JSON.parse(fs.readFileSync(testConfigPath, 'utf8'));
+    assert.strictEqual(diskContent.hybridRoutingPolicy, 'cloud-preferred');
+    assert.strictEqual(diskContent.ollamaModel, 'mistral');
+    console.log('  ✓ Configuration changes durably persisted to disk');
+
+    // 7b. Invalid payload rejected: in-memory state remains untouched
+    const badUpdate = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/config',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${TEST_TOKEN}`
+      }
+    }, {
+      hybridRoutingPolicy: 'invalid-nonexistent-policy'
+    });
+    assert.strictEqual(badUpdate.statusCode, 400);
+
+    // Verify in-memory state remained consistent (not corrupted)
+    const checkConfig = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/config',
+      method: 'GET',
+      headers: { Authorization: `Bearer ${TEST_TOKEN}` }
+    });
+    assert.strictEqual(checkConfig.body.hybridRoutingPolicy, 'cloud-preferred');
+    console.log('  ✓ Failed updates maintain in-memory state consistency without corruption');
+
     console.log('\n================================');
-    console.log('🎉 E2E WebSocket, Auth & Emergency Suite PASSED (6/6 Tests)');
+    console.log('🎉 E2E WebSocket, Auth, Origin & Persistence Suite PASSED (7/7 Tests)');
     console.log('================================\n');
 
   } finally {

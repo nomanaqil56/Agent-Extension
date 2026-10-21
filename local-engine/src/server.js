@@ -307,38 +307,63 @@ const orchestrator = new AgentOrchestrator(toolRegistry, memoryManager, { ...con
 // Initialize Express App
 const app = express();
 
-// Restrict CORS strictly to extension origins and local loopback (Section 4.3)
-const allowedExtIds = process.env.ALLOWED_EXTENSION_IDS
-  ? process.env.ALLOWED_EXTENSION_IDS.split(',').map(s => s.trim()).filter(Boolean)
-  : (Array.isArray(config.allowedExtensionIds) ? config.allowedExtensionIds : []);
+// Dynamic helper: get current allowed extension IDs from env or runtime config
+function getAllowedExtensionIds() {
+  if (process.env.ALLOWED_EXTENSION_IDS) {
+    return process.env.ALLOWED_EXTENSION_IDS.split(',').map(s => s.trim()).filter(Boolean);
+  }
+  if (Array.isArray(config.allowedExtensionIds)) {
+    return config.allowedExtensionIds.map(s => s.trim()).filter(Boolean);
+  }
+  return [];
+}
 
+// Validate request origin against extension allowlist, loopback origins, and untrusted web origins
+function validateRequestOrigin(origin) {
+  // Allow local CLI/scripts/tests with no origin header
+  if (!origin) return { allowed: true, reason: 'No origin header (CLI/test client)' };
+
+  const lower = origin.toLowerCase().trim();
+
+  // Allow local loopback HTTP origins
+  if (/^http:\/\/127\.0\.0\.1(:\d+)?$/.test(lower) || /^http:\/\/localhost(:\d+)?$/.test(lower)) {
+    return { allowed: true, reason: 'Local loopback origin' };
+  }
+
+  // Check browser extension origins
+  if (lower.startsWith('chrome-extension://') || lower.startsWith('moz-extension://')) {
+    const allowed = getAllowedExtensionIds();
+    if (allowed.length > 0) {
+      const extId = lower.replace(/^(chrome|moz)-extension:\/\//, '').split('/')[0];
+      if (allowed.includes(extId)) {
+        return { allowed: true, reason: 'Allowed extension origin' };
+      }
+      return {
+        allowed: false,
+        reason: `CORS policy: Extension origin "${origin}" is not in the allowedExtensionIds list.`
+      };
+    }
+    // Safe & documented behavior for empty allowlist in development:
+    // When no explicit allowlist is configured, extension schemes (chrome-extension://, moz-extension://)
+    // are permitted for developer unpack/sideloading convenience, while untrusted web origins remain strictly blocked.
+    return { allowed: true, reason: 'Development extension scheme permitted (empty allowlist)' };
+  }
+
+  // Explicitly reject all untrusted web origins
+  return {
+    allowed: false,
+    reason: `CORS policy: Access denied for untrusted web origin "${origin}".`
+  };
+}
+
+// Restrict CORS strictly to extension origins and local loopback (Section 4.3)
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow local CLI/scripts/tests with no origin header
-    if (!origin) return callback(null, true);
-
-    const lower = origin.toLowerCase().trim();
-
-    // Check local loopback HTTP origins
-    if (/^http:\/\/127\.0\.0\.1(:\d+)?$/.test(lower) || /^http:\/\/localhost(:\d+)?$/.test(lower)) {
+    const check = validateRequestOrigin(origin);
+    if (check.allowed) {
       return callback(null, true);
     }
-
-    // Check browser extension origins
-    if (lower.startsWith('chrome-extension://') || lower.startsWith('moz-extension://')) {
-      // If specific extension IDs are configured, restrict strictly to them
-      if (allowedExtIds.length > 0) {
-        const extId = lower.replace(/^(chrome|moz)-extension:\/\//, '').split('/')[0];
-        if (allowedExtIds.includes(extId)) {
-          return callback(null, true);
-        }
-        return callback(new Error(`CORS policy: Extension origin "${origin}" is not in the allowedExtensionIds list.`));
-      }
-      return callback(null, true);
-    }
-
-    // Explicitly reject all untrusted web origins
-    return callback(new Error(`CORS policy: Access denied for untrusted web origin "${origin}".`));
+    return callback(new Error(check.reason));
   },
   credentials: true
 }));
@@ -508,7 +533,8 @@ app.post('/config', authenticateHttp, (req, res) => {
       ollamaUrl,
       ollamaModel,
       preferLocalOllama,
-      allowFallbackOnMissingCredentials
+      allowFallbackOnMissingCredentials,
+      allowedExtensionIds
     } = req.body || {};
 
     // Create candidate staging objects to ensure transactional behavior
@@ -576,6 +602,13 @@ app.post('/config', authenticateHttp, (req, res) => {
       candidateConfig.allowFallbackOnMissingCredentials = Boolean(allowFallbackOnMissingCredentials);
     }
 
+    if (allowedExtensionIds !== undefined) {
+      if (!Array.isArray(allowedExtensionIds)) {
+        return res.status(400).json({ error: 'allowedExtensionIds must be an array of strings.' });
+      }
+      candidateConfig.allowedExtensionIds = allowedExtensionIds.map(s => String(s).trim()).filter(Boolean);
+    }
+
     // 6. Update secret keys with strict validation and explicit semantics:
     // - Omitted or containing '••••': preserve existing secret
     // - Explicit null or empty string "": delete credential
@@ -636,6 +669,7 @@ app.post('/config', authenticateHttp, (req, res) => {
       allowFallbackOnMissingCredentials: Boolean(candidateConfig.allowFallbackOnMissingCredentials),
       approvedDirectories: permissionManager.getApprovedDirectories(),
       approvedApplications: candidateConfig.approvedApplications || ['code', 'notepad', 'calc', 'git'],
+      allowedExtensionIds: candidateConfig.allowedExtensionIds || config.allowedExtensionIds || [],
       security: candidateConfig.security || config.security
     };
 
@@ -824,9 +858,23 @@ app.post('/task', authenticateHttp, async (req, res) => {
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 });
 
-// WebSocket Upgrade (URL query tokens deprecated; all clients authenticate over handshake message)
+// WebSocket Upgrade with Loopback & Origin Security Validation
 server.on('upgrade', (request, socket, head) => {
   try {
+    const loopback = validateLoopbackRequest(request);
+    if (!loopback.valid) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    const originCheck = validateRequestOrigin(request.headers.origin);
+    if (!originCheck.allowed) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
     wss.handleUpgrade(request, socket, head, (ws) => {
       ws.__authenticated = false;
       ws.__authHandshakeDone = false;

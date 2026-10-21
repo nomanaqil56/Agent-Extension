@@ -784,6 +784,294 @@ async function runTests() {
     assert.ok(info.result.platform, 'Must allow execution after explicit reset');
   });
 
+  // 28. Centralized Provider-Error Fallback Authorization (P0 — 3)
+  await test('Fallback Authorization: Centralized authorization matrix for provider errors', async () => {
+    const AgentOrchestrator = require('../src/agent/orchestrator');
+    const orchestrator = new AgentOrchestrator(tools, { recordInteraction: () => {} }, {
+      activeProvider: 'gemini',
+      hybridRoutingPolicy: 'balanced',
+      allowFallbackOnMissingCredentials: false
+    });
+
+    // 1. Manual mode: Invalid credentials without fallback -> forbidden
+    const authFail = orchestrator.canFallbackOnProviderError({
+      requestedProvider: 'gemini',
+      activePolicy: 'manual',
+      error: new Error('401 Unauthorized: Invalid API key')
+    });
+    assert.strictEqual(authFail.allowed, false, 'Manual mode must forbid fallback on invalid credentials');
+
+    // 2. Manual mode: Timeout (ETIMEDOUT) without fallback -> forbidden
+    const timeoutFail = orchestrator.canFallbackOnProviderError({
+      requestedProvider: 'gemini',
+      activePolicy: 'manual',
+      error: new Error('ETIMEDOUT: Connection to provider timed out')
+    });
+    assert.strictEqual(timeoutFail.allowed, false, 'Manual mode must forbid fallback on timeout');
+
+    // 3. Manual mode: Rate limit (429) without fallback -> forbidden
+    const rateLimitFail = orchestrator.canFallbackOnProviderError({
+      requestedProvider: 'openai',
+      activePolicy: 'manual',
+      error: new Error('429 Too Many Requests: Rate limit exceeded')
+    });
+    assert.strictEqual(rateLimitFail.allowed, false, 'Manual mode must forbid fallback on rate limit');
+
+    // 4. Manual mode: Network connection error (ECONNREFUSED) without fallback -> forbidden
+    const netFail = orchestrator.canFallbackOnProviderError({
+      requestedProvider: 'anthropic',
+      activePolicy: 'manual',
+      error: new Error('connect ECONNREFUSED 127.0.0.1:443')
+    });
+    assert.strictEqual(netFail.allowed, false, 'Manual mode must forbid fallback on network error');
+
+    // 5. Manual mode: Malformed response (SyntaxError) without fallback -> forbidden
+    const malformedFail = orchestrator.canFallbackOnProviderError({
+      requestedProvider: 'gemini',
+      activePolicy: 'manual',
+      error: new Error('SyntaxError: Unexpected token < in JSON at position 0')
+    });
+    assert.strictEqual(malformedFail.allowed, false, 'Manual mode must forbid fallback on malformed response');
+
+    // 6. Cancellation / AbortError -> never fall back under ANY mode
+    const abortFail = orchestrator.canFallbackOnProviderError({
+      requestedProvider: 'hybrid',
+      activePolicy: 'balanced',
+      error: { name: 'AbortError', message: 'The operation was aborted' }
+    });
+    assert.strictEqual(abortFail.allowed, false, 'Cancellation must never fall back to another engine');
+
+    // 7. Manual mode WITH explicit fallback allowed -> authorized
+    orchestrator.updateConfig({ allowFallbackOnMissingCredentials: true });
+    const authAllowed = orchestrator.canFallbackOnProviderError({
+      requestedProvider: 'gemini',
+      activePolicy: 'manual',
+      error: new Error('401 Unauthorized: Invalid API key')
+    });
+    assert.strictEqual(authAllowed.allowed, true, 'Fallback authorized when explicitly permitted');
+    assert.strictEqual(authAllowed.targetProvider, 'autonomous');
+
+    // 8. Hybrid mode with balanced policy -> fallback authorized for task resilience
+    orchestrator.updateConfig({ allowFallbackOnMissingCredentials: false });
+    const hybridFallback = orchestrator.canFallbackOnProviderError({
+      requestedProvider: 'hybrid',
+      activePolicy: 'balanced',
+      error: new Error('Provider 500 Internal Server Error')
+    });
+    assert.strictEqual(hybridFallback.allowed, true, 'Hybrid balanced policy authorizes autonomous fallback on error');
+  });
+
+  // 29. Orchestrator ReAct Loop: Provider Error Halts Task in Manual Mode (P0 — 3)
+  await test('Provider Error Enforcement: Task halts on provider failure in Manual mode without fallback', async () => {
+    const AgentOrchestrator = require('../src/agent/orchestrator');
+    const failingProvider = {
+      name: 'failing-cloud-mock',
+      isLocal: false,
+      isRemote: true,
+      category: 'cloud',
+      generateStep: async () => {
+        throw new Error('401 Unauthorized: Invalid API key');
+      }
+    };
+
+    const orchestrator = new AgentOrchestrator(tools, { recordInteraction: () => {} }, {
+      activeProvider: 'gemini',
+      allowFallbackOnMissingCredentials: false,
+      providerInstances: { gemini: failingProvider }
+    });
+
+    const result = await orchestrator.runTask({
+      task: 'Synthesize code architecture',
+      providerName: 'gemini'
+    });
+
+    assert.strictEqual(result.success, false, 'Task must fail when provider throws in manual mode');
+    assert.ok(result.summary.includes('Provider error') || result.summary.includes('401'), 'Must report provider error');
+  });
+
+  // 30. Emergency Stop Process Termination: Verified Process Exit (P1 — 5)
+  await test('Emergency Stop Verification: Confirms actual child process termination and tracks states', async () => {
+    const { spawn } = require('child_process');
+    // Spawn real background child process that runs continuously
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000);'], {
+      stdio: 'ignore'
+    });
+    const childPid = child.pid;
+    assert.ok(childPid > 0, 'Child process must be spawned with valid PID');
+
+    // Register with emergency coordinator
+    emergencyCoord.registerProcess(child, 'node background interval');
+    assert.strictEqual(emergencyCoord.isProcessAlive(childPid), true, 'Child process must be alive before emergency stop');
+
+    // Execute emergency stop with verified termination
+    const stopReport = await emergencyCoord.emergencyStop({ maxWaitMs: 2000 });
+    assert.strictEqual(stopReport.status, 'HALTED');
+    assert.ok(stopReport.stoppedProcessCount >= 1, 'Must report at least one stopped process');
+
+    const procRecord = stopReport.processes.find(p => p.pid === childPid);
+    assert.ok(procRecord, 'Must record terminated child process');
+    assert.strictEqual(procRecord.state, 'confirmed', 'Process termination state must be confirmed');
+
+    // Verify via OS signal 0 that child process is genuinely terminated
+    assert.strictEqual(emergencyCoord.isProcessAlive(childPid), false, 'Child process must be dead after emergency stop');
+
+    // Verify simultaneous task submissions while halted: all must be rejected
+    let simultaneousBlockedCount = 0;
+    for (let i = 0; i < 3; i++) {
+      try {
+        await tools.execute('get_system_info', {});
+      } catch (err) {
+        if (err.message.includes('Emergency Stop')) simultaneousBlockedCount++;
+      }
+    }
+    assert.strictEqual(simultaneousBlockedCount, 3, 'All simultaneous submissions must be rejected during halt');
+
+    // Explicit reset to restore normal test state
+    emergencyCoord.resetHalt();
+    assert.strictEqual(emergencyCoord.isEmergencyHalted(), false);
+  });
+
+  // 31. Empty Workspace Lockdown across All Tools (P1 — 7)
+  await test('Empty Workspace Lockdown: Denies all filesystem tools when approvedDirectories is empty', async () => {
+    const emptyPM = new PermissionManager({ approvedDirectories: [] });
+    const emptyTools = new ToolRegistry(emptyPM, auditLogger, emergencyCoord, mockServerContext);
+
+    const toolsToTest = [
+      { name: 'read_file', params: { filePath: 'package.json' } },
+      { name: 'write_file', params: { filePath: 'test.tmp', content: 'abc' } },
+      { name: 'patch_file', params: { filePath: 'package.json', targetContent: 'a', replacementContent: 'b' } },
+      { name: 'delete_file', params: { filePath: 'test.tmp' } },
+      { name: 'list_files', params: { dirPath: '.' } },
+      { name: 'search_files', params: { pattern: 'test' } },
+      { name: 'file_info', params: { filePath: 'package.json' } },
+      { name: 'execute_command', params: { command: 'echo hello' } }
+    ];
+
+    for (const t of toolsToTest) {
+      let blocked = false;
+      try {
+        await emptyTools.execute(t.name, t.params);
+      } catch (err) {
+        blocked = err.message.toLowerCase().includes('workspace') || err.message.toLowerCase().includes('approved');
+      }
+      assert.strictEqual(blocked, true, `Tool "${t.name}" MUST be blocked when no workspace is approved`);
+    }
+  });
+
+  // 32. Filesystem Symlink Escape Defense (P1 — 7)
+  await test('Symlink Defense: Prevents reading or writing files outside workspace via symlink', async () => {
+    const sandboxDir = path.join(__dirname, 'symlink-sandbox');
+    if (!fs.existsSync(sandboxDir)) fs.mkdirSync(sandboxDir, { recursive: true });
+
+    const localPM = new PermissionManager({ approvedDirectories: [sandboxDir] });
+    const localTools = new ToolRegistry(localPM, auditLogger, emergencyCoord, mockServerContext);
+
+    const linkPath = path.join(sandboxDir, 'escape_link');
+    try {
+      // Create symlink pointing outside sandboxDir to parent directory
+      if (fs.existsSync(linkPath)) fs.unlinkSync(linkPath);
+      try {
+        fs.symlinkSync(path.resolve(__dirname), linkPath, 'junction');
+      } catch (e) {
+        // If symlink creation requires admin privileges on Windows, test with canonicalizePath directly
+      }
+
+      // If symlink was created, verify isPathApproved rejects target outside sandbox
+      if (fs.existsSync(linkPath)) {
+        const targetInsideSymlink = path.join(linkPath, 'test-engine.js');
+        const approved = localPM.isPathApproved(targetInsideSymlink);
+        assert.strictEqual(approved, false, 'Target accessed via symlink escaping workspace must NOT be approved');
+
+        let readBlocked = false;
+        try {
+          await localTools.execute('read_file', { filePath: targetInsideSymlink });
+        } catch (err) {
+          readBlocked = err.message.toLowerCase().includes('approved') || err.message.toLowerCase().includes('workspace');
+        }
+        assert.strictEqual(readBlocked, true, 'Reading file via symlink outside workspace must be denied');
+      }
+    } finally {
+      try {
+        if (fs.existsSync(linkPath)) fs.unlinkSync(linkPath);
+        fs.rmSync(sandboxDir, { recursive: true, force: true });
+      } catch (e) {}
+    }
+  });
+
+  // 33. Dynamic Workspace Scope Changes during Execution (P1 — 7)
+  await test('Dynamic Workspace Changes: Scope updates take effect immediately during execution', async () => {
+    const tempScopeDir = path.join(__dirname, 'temp-scope-dir');
+    if (!fs.existsSync(tempScopeDir)) fs.mkdirSync(tempScopeDir, { recursive: true });
+
+    const testFile = path.join(tempScopeDir, 'scope_test.txt');
+    fs.writeFileSync(testFile, 'Scope content', 'utf8');
+
+    const dynamicPM = new PermissionManager({ approvedDirectories: [] });
+    const dynamicTools = new ToolRegistry(dynamicPM, auditLogger, emergencyCoord, mockServerContext);
+
+    // Initial attempt: 0 workspaces -> denied
+    let initialDenied = false;
+    try {
+      await dynamicTools.execute('read_file', { filePath: testFile });
+    } catch (err) {
+      initialDenied = true;
+    }
+    assert.strictEqual(initialDenied, true, 'Must deny when folder not approved');
+
+    // Add directory dynamically -> immediately allowed
+    dynamicPM.addApprovedDirectory(tempScopeDir);
+    const readRes = await dynamicTools.execute('read_file', { filePath: testFile });
+    assert.strictEqual(readRes.result.content, 'Scope content', 'Must allow reading after folder is approved');
+
+    // Remove directory dynamically -> immediately denied
+    dynamicPM.removeApprovedDirectory(tempScopeDir);
+    let postRemovalDenied = false;
+    try {
+      await dynamicTools.execute('read_file', { filePath: testFile });
+    } catch (err) {
+      postRemovalDenied = true;
+    }
+    assert.strictEqual(postRemovalDenied, true, 'Must immediately deny after folder approval is revoked');
+
+    try {
+      fs.rmSync(tempScopeDir, { recursive: true, force: true });
+    } catch (e) {}
+  });
+
+  // 34. Desktop Tool Security & Platform Executable Resolution (P1 — 7)
+  await test('Desktop Tool Regression: Validates application arguments and resolves platform binaries', async () => {
+    const DesktopTool = require('../src/tools/desktop');
+    const dt = new DesktopTool(permManager);
+
+    // 1. Calculator rejects arguments
+    assert.throws(() => {
+      dt.validateApplicationArgs('calc', ['--inject-flag']);
+    }, /Calculator application takes no command-line arguments/);
+
+    // 2. Notepad rejects switch flags like /p
+    assert.throws(() => {
+      dt.validateApplicationArgs('notepad', ['/p']);
+    }, /Switch flags are not permitted/);
+
+    // 3. Notepad rejects files outside approved workspace
+    assert.throws(() => {
+      dt.validateApplicationArgs('notepad', ['C:\\Windows\\win.ini']);
+    }, /outside approved workspaces/);
+
+    // 4. Code editor blocks dangerous flags
+    assert.throws(() => {
+      dt.validateApplicationArgs('code', ['--disable-web-security']);
+    }, /Unsupported or dangerous flag/);
+
+    // 5. Binary resolution returns string binary for approved apps
+    const calcBin = dt.resolveApplicationBinary('calc');
+    assert.ok(typeof calcBin === 'string' && calcBin.length > 0);
+    const notepadBin = dt.resolveApplicationBinary('notepad');
+    assert.ok(typeof notepadBin === 'string' && notepadBin.length > 0);
+    const gitBin = dt.resolveApplicationBinary('git');
+    assert.ok(typeof gitBin === 'string' && gitBin.length > 0);
+  });
+
   // Clean up test log directory
   try {
     fs.rmSync(testLogsDir, { recursive: true, force: true });

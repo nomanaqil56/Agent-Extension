@@ -96,6 +96,7 @@ const filesToCompile = [
   'local-engine/src/security/permissions.js',
   'local-engine/src/security/audit.js',
   'local-engine/src/security/emergency.js',
+  'local-engine/src/security/privacy.js',
   'local-engine/src/tools/index.js',
   'local-engine/src/tools/desktop.js',
   'local-engine/src/tools/files.js',

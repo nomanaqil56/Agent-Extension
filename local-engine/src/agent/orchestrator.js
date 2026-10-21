@@ -2,16 +2,45 @@
 
 const { createProvider, HybridRouter, FallbackAgentProvider } = require('./providers');
 const { SYSTEM_PROMPT } = require('./prompts');
+const PrivacyEnforcer = require('../security/privacy');
 
 class AgentOrchestrator {
   constructor(toolRegistry, memoryManager, config = {}) {
     this.toolRegistry = toolRegistry;
     this.memoryManager = memoryManager;
     this.config = config;
+    this.privacyEnforcer = new PrivacyEnforcer(this.config);
   }
 
   updateConfig(newConfig) {
     this.config = { ...this.config, ...newConfig };
+    this.privacyEnforcer.updateConfig(this.config);
+  }
+
+  // Centralized fallback authorization on provider failure
+  canFallbackOnProviderError({ requestedProvider = 'hybrid', activePolicy = 'balanced', error = {} }) {
+    // If aborted, halted, or cancelled: never fall back, halt immediately
+    const errMsg = (error?.message || '').toLowerCase();
+    if (error?.name === 'AbortError' || errMsg.includes('aborted') || errMsg.includes('halted') || errMsg.includes('cancel')) {
+      return { allowed: false, reason: 'Task execution halted or cancelled.' };
+    }
+
+    const isManual = requestedProvider && requestedProvider.toLowerCase() !== 'hybrid';
+    const allowFallback = Boolean(this.config.allowFallbackOnMissingCredentials);
+
+    // In Manual Mode, fallback to Autonomous Engine is strictly forbidden unless explicitly authorized
+    if (isManual && !allowFallback) {
+      return {
+        allowed: false,
+        reason: `Provider error (${error.message}). Automatic fallback to Autonomous Engine is disabled in Manual mode.`
+      };
+    }
+
+    return {
+      allowed: true,
+      targetProvider: 'autonomous',
+      reason: `Provider error (${error.message}). Switched to Built-in Autonomous Engine.`
+    };
   }
 
   // Execute full agent task pipeline
@@ -85,7 +114,16 @@ class AgentOrchestrator {
     }
 
     // Otherwise run iterative ReAct loop with selected LLM
-    return this.runLlmReActLoop(task, context, provider, notify, abortSignal, policy);
+    return this.runLlmReActLoop(
+      task,
+      context,
+      provider,
+      notify,
+      abortSignal,
+      policy,
+      providerName || activeProviderName,
+      conversationId
+    );
   }
 
   // --- Autonomous Engine Execution ---
@@ -219,7 +257,7 @@ class AgentOrchestrator {
   }
 
   // --- LLM Multi-step ReAct Loop ---
-  async runLlmReActLoop(task, context, provider, notify, abortSignal, policy) {
+  async runLlmReActLoop(task, context, provider, notify, abortSignal, policy, requestedProvider = 'hybrid', conversationId = null) {
     const isCloud = typeof provider.isLocal === 'boolean'
       ? !provider.isLocal
       : (typeof provider.isRemote === 'boolean'
@@ -276,20 +314,72 @@ class AgentOrchestrator {
       }
       currentStep++;
 
+      // Centralized Privacy Enforcement: Evaluate exact outbound payload & provenance immediately prior to cloud request
+      const privacyCheck = this.privacyEnforcer.inspectOutboundPayload({
+        messages,
+        tools,
+        context,
+        activePolicy,
+        provider,
+        isManual: requestedProvider && requestedProvider !== 'hybrid',
+        allowFallback: Boolean(this.config.allowFallbackOnMissingCredentials),
+        bypassGuard: Boolean(this.config.bypassPrivacyGuardForTest),
+        conversationId
+      });
+
+      if (!privacyCheck.allowed) {
+        if (privacyCheck.action === 'divert') {
+          notify({
+            type: 'PROVIDER_SWITCH',
+            provider: privacyCheck.targetProvider || 'autonomous',
+            reason: privacyCheck.reason
+          });
+          notify({
+            type: 'AGENT_MESSAGE',
+            message: `🔒 ${privacyCheck.reason}`
+          });
+          const fallback = new FallbackAgentProvider(this.toolRegistry);
+          return this.runAutonomousFallback(task, context, fallback, notify, abortSignal);
+        }
+
+        notify({
+          type: 'TASK_COMPLETE',
+          success: false,
+          blocked: true,
+          summary: `🛑 ${privacyCheck.error}`
+        });
+        return { success: false, blocked: true, summary: privacyCheck.error };
+      }
+
       let stepDecision;
       try {
         stepDecision = await provider.generateStep(messages, tools);
       } catch (llmErr) {
+        const fallbackAuth = this.canFallbackOnProviderError({
+          requestedProvider,
+          activePolicy,
+          error: llmErr
+        });
+
+        if (!fallbackAuth.allowed) {
+          notify({
+            type: 'TASK_COMPLETE',
+            success: false,
+            error: llmErr.message,
+            summary: `❌ ${fallbackAuth.reason}`
+          });
+          return { success: false, summary: fallbackAuth.reason, error: llmErr.message };
+        }
+
         notify({
           type: 'PROVIDER_SWITCH',
-          provider: 'autonomous',
-          reason: `LLM Error (${provider.constructor.name}): ${llmErr.message}. Switching to Built-in Autonomous Engine.`
+          provider: fallbackAuth.targetProvider || 'autonomous',
+          reason: fallbackAuth.reason
         });
         notify({
           type: 'AGENT_MESSAGE',
-          message: `⚠️ Provider Error: ${llmErr.message}. Continuing with Built-in Autonomous Engine.`
+          message: `⚠️ ${fallbackAuth.reason}`
         });
-        // Gracefully fall back to built-in autonomous engine
         const fallback = new FallbackAgentProvider(this.toolRegistry);
         return this.runAutonomousFallback(task, context, fallback, notify, abortSignal);
       }
@@ -401,7 +491,7 @@ class AgentOrchestrator {
             'write_file', 'patch_file', 'delete_file', 'execute_command',
             'clipboard_read', 'clipboard_write', 'launch_application', 'get_system_info'
           ];
-          if (activePolicy === 'privacy-first' && localContentTools.includes(tool) && isCloudProvider) {
+          if (activePolicy === 'privacy-first' && localContentTools.includes(tool) && isCloud) {
             notify({
               type: 'PROVIDER_SWITCH',
               provider: 'autonomous',
