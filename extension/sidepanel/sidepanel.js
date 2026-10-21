@@ -538,12 +538,25 @@ document.addEventListener('DOMContentLoaded', () => {
       </div>
     `;
 
-    card.querySelector('.agy-btn-approve').addEventListener('click', () => {
+    const approveBtn = card.querySelector('.agy-btn-approve');
+    const denyBtn = card.querySelector('.agy-btn-deny');
+    const disableApprovalButtons = () => {
+      approveBtn.disabled = true;
+      denyBtn.disabled = true;
+      approveBtn.style.opacity = '0.5';
+      denyBtn.style.opacity = '0.5';
+      approveBtn.style.pointerEvents = 'none';
+      denyBtn.style.pointerEvents = 'none';
+    };
+
+    approveBtn.addEventListener('click', () => {
+      disableApprovalButtons();
       resolveApproval(approvalId, true);
       card.remove();
     });
 
-    card.querySelector('.agy-btn-deny').addEventListener('click', () => {
+    denyBtn.addEventListener('click', () => {
+      disableApprovalButtons();
       resolveApproval(approvalId, false);
       card.remove();
     });
@@ -1213,7 +1226,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function formatMarkdown(text) {
     if (!text) return '';
-    return text
+    // Defense: Escape raw HTML entities first to prevent arbitrary HTML or script injection
+    const escaped = escapeHtml(text);
+    return escaped
       .replace(/### (.*?)(\n|$)/g, '<h4 style="color:#00F2FE;margin:6px 0;">$1</h4>')
       .replace(/## (.*?)(\n|$)/g, '<h3 style="color:#00F2FE;margin:8px 0;">$1</h3>')
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')

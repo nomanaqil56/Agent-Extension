@@ -102,6 +102,33 @@ async function runE2ETest() {
     assert.strictEqual(replayPair.statusCode, 409, 'Replay of consumed pairing code must be rejected with 409');
     console.log('  ✓ Reused pairing code rejected with 409 (Single-use consumption enforced)');
 
+    // 1d. Host Header Spoofing on /pair: Host header pointing to external domain must be rejected
+    const spoofedHostPair = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/pair',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Host: 'attacker.evil.com:3721'
+      }
+    }, { pairingCode: 'ANY_CODE' });
+    assert.strictEqual(spoofedHostPair.statusCode, 403, 'Spoofed external Host header on /pair must be rejected with 403');
+    console.log('  ✓ Spoofed Host header rejected with 403 on /pair');
+
+    // 1e. CORS Origin Validation: Untrusted web origins must be rejected
+    const untrustedOrigin = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/health',
+      method: 'GET',
+      headers: {
+        Origin: 'https://attacker.evil.com'
+      }
+    });
+    assert.strictEqual(untrustedOrigin.statusCode, 500, 'Untrusted web origin must trigger CORS error');
+    console.log('  ✓ Untrusted web origin rejected by CORS policy');
+
     // --- TEST 2: Settings Synchronization (POST /config and GET /config) ---
     console.log('\n[Test 2] Testing Authenticated Settings Synchronization...');
 
@@ -196,6 +223,54 @@ async function runE2ETest() {
     });
     assert.strictEqual(preserveConfig.body.hasGeminiKey, true, 'Masked placeholder must not delete or overwrite secret');
     console.log('  ✓ Masked placeholder does not overwrite real secret');
+
+    // 2f. Validation: Invalid provider enum rejected with 400
+    const invalidProviderConfig = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/config',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${TEST_TOKEN}`
+      }
+    }, {
+      activeProvider: 'unsupported-provider-999'
+    });
+    assert.strictEqual(invalidProviderConfig.statusCode, 400, 'Invalid provider name must return 400');
+    console.log('  ✓ Invalid provider name rejected with 400');
+
+    // 2g. Validation: Invalid policy enum rejected with 400
+    const invalidPolicyConfig = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/config',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${TEST_TOKEN}`
+      }
+    }, {
+      hybridRoutingPolicy: 'invalid-policy-name'
+    });
+    assert.strictEqual(invalidPolicyConfig.statusCode, 400, 'Invalid routing policy name must return 400');
+    console.log('  ✓ Invalid routing policy rejected with 400');
+
+    // 2h. Validation: Malformed Ollama URL rejected with 400
+    const invalidUrlConfig = await httpRequest({
+      hostname: '127.0.0.1',
+      port: TEST_PORT,
+      path: '/config',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${TEST_TOKEN}`
+      }
+    }, {
+      ollamaUrl: 'not-a-valid-url-format'
+    });
+    assert.strictEqual(invalidUrlConfig.statusCode, 400, 'Malformed URL must return 400');
+    console.log('  ✓ Malformed Ollama URL rejected with 400');
 
     // --- TEST 3: WebSocket Authentication Failure (Clean Code 4003) ---
     console.log('\n[Test 3] Testing WebSocket Handshake Authentication Failure...');

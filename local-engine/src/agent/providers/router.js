@@ -90,6 +90,21 @@ class HybridRouter {
     // 1. Explicit Non-Hybrid Manual Provider Selection
     // In Manual mode: strictly respect chosen provider; do NOT silently substitute Autonomous Engine unless fallback is explicitly enabled!
     if (requested !== 'hybrid') {
+      // In Privacy-First mode, cloud models are strictly forbidden from receiving local operations or private data
+      if (policy === 'privacy-first' && (classification.isLocalOperation || classification.isSensitive)) {
+        if (['gemini', 'claude', 'anthropic', 'openai'].includes(requested)) {
+          return {
+            provider: null,
+            activeProviderName: requested,
+            requestedProvider: requested,
+            policy: 'privacy-first',
+            blocked: true,
+            error: `Privacy-First Policy Violation: Task contains local files or private operations and cannot be transmitted to cloud provider "${requested}". Select Ollama or Autonomous Engine, or adjust your routing policy.`,
+            fallbackReason: 'Blocked outbound cloud transmission of local private data under Privacy-First policy.'
+          };
+        }
+      }
+
       switch (requested) {
         case 'gemini': {
           if (!availability.gemini.available) {

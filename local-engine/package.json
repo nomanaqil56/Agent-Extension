@@ -8,6 +8,7 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "test": "node tests/test-engine.js",
+    "test:privacy": "node tests/test-privacy.js",
     "test:e2e": "node tests/test-e2e.js"
   },
   "keywords": [

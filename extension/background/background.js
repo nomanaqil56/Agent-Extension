@@ -5,6 +5,25 @@ const DEFAULT_ENGINE_PORT = 3721;
 let localEngineWs = null;
 let isConnectedToEngine = false;
 let authToken = '';
+let reconnectTimer = null;
+let reconnectAttempts = 0;
+
+function scheduleReconnect(customDelayMs = null) {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  // Bounded exponential backoff: 2s, 3s, 4.5s... up to 30s + jitter
+  const baseDelay = customDelayMs !== null ? customDelayMs : Math.min(30000, Math.floor(2000 * Math.pow(1.5, reconnectAttempts)));
+  const jitter = Math.floor(Math.random() * 600);
+  const finalDelay = baseDelay + jitter;
+  reconnectAttempts++;
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectToLocalEngine();
+  }, finalDelay);
+}
 
 // Initialize extension settings & side panel behavior
 chrome.runtime.onInstalled.addListener(async () => {
@@ -36,6 +55,11 @@ chrome.runtime.onStartup.addListener(async () => {
 // --- Local Agent Engine WebSocket Bridge ---
 
 function connectToLocalEngine() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
   chrome.storage.local.get(['enginePort', 'authToken'], (res) => {
     const port = res.enginePort || DEFAULT_ENGINE_PORT;
     const token = res.authToken || authToken || '';
@@ -46,6 +70,7 @@ function connectToLocalEngine() {
       try {
         localEngineWs.close();
       } catch (e) {}
+      localEngineWs = null;
     }
 
     try {
@@ -92,19 +117,19 @@ function connectToLocalEngine() {
             error: 'Authentication failed. Please verify token or use Pairing Code in Settings.'
           });
           // Back off when token is rejected to avoid busy hammering
-          setTimeout(connectToLocalEngine, 10000);
+          scheduleReconnect(10000);
           return;
         }
 
         if (wasConnected) {
-          console.log('[Antigravity] Disconnected from Local Agent Engine. Retrying in 4s...');
+          console.log('[Antigravity] Disconnected from Local Agent Engine. Scheduling reconnection...');
         }
         broadcastToExtensionViews({
           type: 'ENGINE_STATUS',
           connected: false,
           port
         });
-        setTimeout(connectToLocalEngine, 4000);
+        scheduleReconnect();
       };
 
       localEngineWs.onerror = () => {
@@ -113,7 +138,7 @@ function connectToLocalEngine() {
     } catch (err) {
       console.warn('[Antigravity] WS connection attempt failed:', err);
       isConnectedToEngine = false;
-      setTimeout(connectToLocalEngine, 4000);
+      scheduleReconnect();
     }
   });
 }
@@ -124,6 +149,7 @@ async function handleEngineMessage(msg, port) {
   if (msg.type === 'ENGINE_STATUS') {
     if (msg.connected && msg.authenticated) {
       isConnectedToEngine = true;
+      reconnectAttempts = 0;
       console.log('[Antigravity] Engine connection and authentication verified!');
       broadcastToExtensionViews({
         type: 'ENGINE_STATUS',

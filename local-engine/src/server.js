@@ -93,20 +93,73 @@ let configNeedsCleaning = false;
   }
 });
 
-// Helper: Safely persist .secrets.json
-function persistSecretsFile() {
+// Helper: Atomically and safely persist a JSON file using a temp file, fsync, and atomic rename
+function writeAtomicJsonSync(filePath, data, fileMode = 0o600) {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  const tempPath = `${filePath}.tmp.${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  const serialized = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+
+  let fd = null;
   try {
-    fs.writeFileSync(secretsPath, JSON.stringify(secrets, null, 2), 'utf8');
+    fd = fs.openSync(tempPath, 'w', fileMode);
+    fs.writeFileSync(fd, serialized, 'utf8');
+    try {
+      fs.fsyncSync(fd);
+    } catch (e) {}
+    fs.closeSync(fd);
+    fd = null;
+
+    // Platform-safe atomic rename (Windows file lock collisions fallback)
+    if (process.platform === 'win32' && fs.existsSync(filePath)) {
+      try {
+        fs.renameSync(tempPath, filePath);
+      } catch (renameErr) {
+        try {
+          fs.copyFileSync(tempPath, filePath);
+          fs.unlinkSync(tempPath);
+        } catch (copyErr) {
+          throw renameErr;
+        }
+      }
+    } else {
+      fs.renameSync(tempPath, filePath);
+    }
+    return true;
   } catch (err) {
-    console.warn('[Server] Could not persist .secrets.json:', err.message);
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch (e) {}
+    }
+    if (fs.existsSync(tempPath)) {
+      try { fs.unlinkSync(tempPath); } catch (e) {}
+    }
+    throw err;
   }
 }
 
-if (configNeedsCleaning) {
-  persistSecretsFile();
+// Helper: Safely persist .secrets.json using atomic file persistence
+function persistSecretsFile() {
   try {
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
-  } catch (e) {}
+    writeAtomicJsonSync(secretsPath, secrets, 0o600);
+    return true;
+  } catch (err) {
+    console.warn('[Server] Could not persist .secrets.json:', err.message);
+    return false;
+  }
+}
+
+// Secret Migration: persist private secrets first; only clean config.json after persistence succeeds
+if (configNeedsCleaning) {
+  const saved = persistSecretsFile();
+  if (saved) {
+    try {
+      writeAtomicJsonSync(configPath, config, 0o644);
+    } catch (e) {}
+  } else {
+    console.warn('[Server] Secret migration aborted: Could not save .secrets.json safely');
+  }
 }
 
 const PORT = parseInt(process.env.ENGINE_PORT || config.port, 10) || 3721;
@@ -176,10 +229,58 @@ function persistConfigFile() {
         ]
       }
     };
-    fs.writeFileSync(configPath, JSON.stringify(toSave, null, 2), 'utf8');
+    writeAtomicJsonSync(configPath, toSave, 0o644);
+    return true;
   } catch (err) {
     console.warn('[Server] Could not persist config.json:', err.message);
+    return false;
   }
+}
+
+// Helper: Rigorous loopback address normalizer and validator (Section 4.1)
+function isLoopbackAddress(ip) {
+  if (!ip || typeof ip !== 'string') return false;
+  const trimmed = ip.trim();
+  // Strip IPv4-mapped IPv6 prefix (e.g. ::ffff:127.0.0.1 -> 127.0.0.1)
+  const normalized = trimmed.replace(/^::ffff:/i, '');
+  if (normalized === '127.0.0.1' || normalized === '::1') return true;
+  // Standard IPv4 loopback subnet 127.0.0.0/8
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(normalized)) {
+    const parts = normalized.split('.').map(Number);
+    return parts.every(p => p >= 0 && p <= 255);
+  }
+  return false;
+}
+
+// Validate that an HTTP request originated from local loopback (Physical socket check + Host header defense)
+function validateLoopbackRequest(req) {
+  // CRITICAL: We validate the physical socket remote peer address.
+  // Never trust forwarded headers (X-Forwarded-For, X-Real-IP) as proof of loopback!
+  const remoteIp = req.socket?.remoteAddress || '';
+  if (!isLoopbackAddress(remoteIp)) {
+    return {
+      valid: false,
+      reason: `Remote peer address "${remoteIp}" is not a valid local loopback address.`
+    };
+  }
+
+  // Host header defense-in-depth: If a Host header is present, ensure it points to local loopback
+  const hostHeader = (req.headers.host || '').trim().toLowerCase();
+  if (hostHeader) {
+    const hostWithoutPort = hostHeader.split(':')[0];
+    const isLoopbackHost = hostWithoutPort === 'localhost' ||
+                           hostWithoutPort === '127.0.0.1' ||
+                           hostWithoutPort === '[::1]' ||
+                           hostWithoutPort === HOST.toLowerCase();
+    if (!isLoopbackHost) {
+      return {
+        valid: false,
+        reason: `Host header "${hostHeader}" does not match local loopback host.`
+      };
+    }
+  }
+
+  return { valid: true };
 }
 
 // Initialize Security, Storage & Execution Core
@@ -206,23 +307,34 @@ const orchestrator = new AgentOrchestrator(toolRegistry, memoryManager, { ...con
 // Initialize Express App
 const app = express();
 
-// Restrict CORS strictly to extension origins and local loopback (Phase 9.6)
-const allowedOriginPatterns = [
-  /^chrome-extension:\/\//,
-  /^moz-extension:\/\//,
-  /^http:\/\/localhost(:\d+)?$/,
-  /^http:\/\/127\.0\.0\.1(:\d+)?$/
-];
-
+// Restrict CORS strictly to extension origins and local loopback (Section 4.3)
 app.use(cors({
   origin: (origin, callback) => {
     // Allow local CLI/scripts/tests with no origin header
     if (!origin) return callback(null, true);
-    const isAllowed = allowedOriginPatterns.some(pattern => pattern.test(origin));
-    if (isAllowed) {
+
+    const lower = origin.toLowerCase().trim();
+
+    // Check local loopback HTTP origins
+    if (/^http:\/\/127\.0\.0\.1(:\d+)?$/.test(lower) || /^http:\/\/localhost(:\d+)?$/.test(lower)) {
       return callback(null, true);
     }
-    return callback(new Error('CORS policy: Access restricted to authorized extension and local loopback origins.'));
+
+    // Check browser extension origins
+    if (lower.startsWith('chrome-extension://') || lower.startsWith('moz-extension://')) {
+      // If specific extension IDs are configured, restrict to them
+      if (Array.isArray(config.allowedExtensionIds) && config.allowedExtensionIds.length > 0) {
+        const extId = lower.replace(/^(chrome|moz)-extension:\/\//, '').split('/')[0];
+        if (config.allowedExtensionIds.includes(extId)) {
+          return callback(null, true);
+        }
+        return callback(new Error(`CORS policy: Extension origin "${origin}" is not in the allowedExtensionIds list.`));
+      }
+      return callback(null, true);
+    }
+
+    // Explicitly reject all untrusted web origins
+    return callback(new Error(`CORS policy: Access denied for untrusted web origin "${origin}".`));
   },
   credentials: true
 }));
@@ -243,15 +355,10 @@ function authenticateHttp(req, res, next) {
 
 // Loopback-only Pairing Endpoint with Expiry, Rate-Limiting, and One-Time Consumption
 app.post('/pair', (req, res) => {
-  const remoteIp = req.socket.remoteAddress || '';
-  const isLoopback = remoteIp === '127.0.0.1' ||
-                     remoteIp === '::1' ||
-                     remoteIp === '::ffff:127.0.0.1' ||
-                     req.hostname === 'localhost' ||
-                     req.hostname === '127.0.0.1';
-
-  if (!isLoopback) {
-    return res.status(403).json({ error: 'Pairing is only allowed from local loopback.' });
+  const remoteIp = req.socket?.remoteAddress || '';
+  const loopbackCheck = validateLoopbackRequest(req);
+  if (!loopbackCheck.valid) {
+    return res.status(403).json({ error: `Pairing forbidden: ${loopbackCheck.reason}` });
   }
 
   // Check rate limiting / lockout
@@ -372,92 +479,158 @@ app.get('/config', authenticateHttp, (req, res) => {
   });
 });
 
-// Authenticated Configuration Update (Canonical schema with safe secret persistence)
+// Authenticated Configuration Update (Canonical schema with strict validation and safe secret persistence)
 app.post('/config', authenticateHttp, (req, res) => {
-  const {
-    activeProvider,
-    selectedProvider,
-    hybridRoutingPolicy,
-    geminiApiKey,
-    geminiKey,
-    anthropicApiKey,
-    anthropicKey,
-    openaiApiKey,
-    openAiKey,
-    openaiKey,
-    ollamaUrl,
-    ollamaModel,
-    preferLocalOllama,
-    allowFallbackOnMissingCredentials
-  } = req.body || {};
+  try {
+    const {
+      activeProvider,
+      selectedProvider,
+      hybridRoutingPolicy,
+      geminiApiKey,
+      geminiKey,
+      anthropicApiKey,
+      anthropicKey,
+      openaiApiKey,
+      openAiKey,
+      openaiKey,
+      ollamaUrl,
+      ollamaModel,
+      preferLocalOllama,
+      allowFallbackOnMissingCredentials
+    } = req.body || {};
 
-  const targetProvider = activeProvider || selectedProvider;
-  if (targetProvider !== undefined) config.activeProvider = targetProvider;
-  if (hybridRoutingPolicy !== undefined) config.hybridRoutingPolicy = hybridRoutingPolicy;
-  if (ollamaUrl !== undefined) config.ollamaUrl = ollamaUrl.trim();
-  if (ollamaModel !== undefined) config.ollamaModel = ollamaModel.trim();
-  if (preferLocalOllama !== undefined) config.preferLocalOllama = Boolean(preferLocalOllama);
-  if (allowFallbackOnMissingCredentials !== undefined) {
-    config.allowFallbackOnMissingCredentials = Boolean(allowFallbackOnMissingCredentials);
-  }
+    const targetProvider = activeProvider !== undefined ? activeProvider : selectedProvider;
 
-  // Update secret keys with explicit semantics:
-  // - Omitted or containing '••••': preserve existing secret
-  // - Explicit null or empty string "": delete credential
-  // - New non-empty string: update credential
-  let secretsChanged = false;
-
-  const handleSecretField = (key, val) => {
-    if (val === undefined) return;
-    if (typeof val === 'string' && val.includes('••••')) return;
-    if (val === null || val === '') {
-      secrets[key] = '';
-      secretsChanged = true;
-    } else if (typeof val === 'string' && val.trim().length > 0) {
-      secrets[key] = val.trim();
-      secretsChanged = true;
+    // 1. Validate Provider Enum
+    const validProviders = new Set([
+      'hybrid', 'gemini', 'anthropic', 'openai', 'ollama', 'autonomous',
+      'google', 'claude', 'chatgpt', 'local', 'fallback'
+    ]);
+    if (targetProvider !== undefined) {
+      if (typeof targetProvider !== 'string' || !validProviders.has(targetProvider.toLowerCase().trim())) {
+        return res.status(400).json({
+          error: `Invalid provider "${targetProvider}". Supported providers: hybrid, gemini, anthropic, openai, ollama, autonomous.`
+        });
+      }
+      config.activeProvider = targetProvider.toLowerCase().trim();
     }
-  };
 
-  handleSecretField('geminiApiKey', geminiApiKey ?? geminiKey);
-  handleSecretField('anthropicApiKey', anthropicApiKey ?? anthropicKey);
-  handleSecretField('openaiApiKey', openaiApiKey ?? openAiKey ?? openaiKey);
+    // 2. Validate Routing Policy Enum
+    const validPolicies = new Set(['balanced', 'privacy-first', 'cloud-preferred', 'manual']);
+    if (hybridRoutingPolicy !== undefined) {
+      if (typeof hybridRoutingPolicy !== 'string' || !validPolicies.has(hybridRoutingPolicy.toLowerCase().trim())) {
+        return res.status(400).json({
+          error: `Invalid hybridRoutingPolicy "${hybridRoutingPolicy}". Supported policies: balanced, privacy-first, cloud-preferred, manual.`
+        });
+      }
+      config.hybridRoutingPolicy = hybridRoutingPolicy.toLowerCase().trim();
+    }
 
-  if (secretsChanged) {
-    persistSecretsFile();
-  }
+    // 3. Validate Ollama URL
+    if (ollamaUrl !== undefined) {
+      if (typeof ollamaUrl !== 'string') {
+        return res.status(400).json({ error: 'ollamaUrl must be a string.' });
+      }
+      const trimmedUrl = ollamaUrl.trim();
+      try {
+        const parsed = new URL(trimmedUrl);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          return res.status(400).json({ error: 'ollamaUrl must use http or https protocol.' });
+        }
+        config.ollamaUrl = trimmedUrl;
+      } catch (urlErr) {
+        return res.status(400).json({ error: `Invalid ollamaUrl format: "${trimmedUrl}"` });
+      }
+    }
 
-  // Dynamically update orchestrator config with merged settings and credentials
-  orchestrator.updateConfig({ ...config, ...secrets });
+    // 4. Validate Ollama Model
+    if (ollamaModel !== undefined) {
+      if (typeof ollamaModel !== 'string' || ollamaModel.trim().length === 0 || ollamaModel.length > 64) {
+        return res.status(400).json({ error: 'ollamaModel must be a non-empty string under 64 characters.' });
+      }
+      if (!/^[a-zA-Z0-9_\-\.:]+$/.test(ollamaModel.trim())) {
+        return res.status(400).json({ error: 'ollamaModel contains invalid characters.' });
+      }
+      config.ollamaModel = ollamaModel.trim();
+    }
 
-  // Persist updated non-secret configuration
-  persistConfigFile();
+    // 5. Booleans
+    if (preferLocalOllama !== undefined) config.preferLocalOllama = Boolean(preferLocalOllama);
+    if (allowFallbackOnMissingCredentials !== undefined) {
+      config.allowFallbackOnMissingCredentials = Boolean(allowFallbackOnMissingCredentials);
+    }
 
-  auditLogger.log({
-    action: 'SETTINGS_CONFIGURED',
-    status: 'SUCCESS',
-    riskLevel: 'low',
-    params: {
+    // 6. Update secret keys with strict validation and explicit semantics:
+    // - Omitted or containing '••••': preserve existing secret
+    // - Explicit null or empty string "": delete credential
+    // - New non-empty string: validate and update credential
+    let secretsChanged = false;
+
+    const handleSecretField = (key, val) => {
+      if (val === undefined) return;
+      if (typeof val === 'string' && val.includes('••••')) return;
+      if (val === null || val === '') {
+        secrets[key] = '';
+        secretsChanged = true;
+      } else if (typeof val === 'string') {
+        const trimmed = val.trim();
+        if (trimmed.length > 512) {
+          throw new Error(`API key for ${key} exceeds maximum length (512 characters).`);
+        }
+        if (/[\x00-\x1F\x7F]/.test(trimmed)) {
+          throw new Error(`API key for ${key} contains invalid control characters.`);
+        }
+        if (trimmed.length > 0) {
+          secrets[key] = trimmed;
+          secretsChanged = true;
+        }
+      } else {
+        throw new Error(`Invalid type for credential ${key}; expected string.`);
+      }
+    };
+
+    handleSecretField('geminiApiKey', geminiApiKey ?? geminiKey);
+    handleSecretField('anthropicApiKey', anthropicApiKey ?? anthropicKey);
+    handleSecretField('openaiApiKey', openaiApiKey ?? openAiKey ?? openaiKey);
+
+    if (secretsChanged) {
+      persistSecretsFile();
+    }
+
+    // Dynamically update orchestrator config with merged settings and credentials
+    orchestrator.updateConfig({ ...config, ...secrets });
+
+    // Persist updated non-secret configuration
+    persistConfigFile();
+
+    auditLogger.log({
+      action: 'SETTINGS_CONFIGURED',
+      status: 'SUCCESS',
+      riskLevel: 'low',
+      params: {
+        activeProvider: config.activeProvider,
+        hybridRoutingPolicy: config.hybridRoutingPolicy,
+        hasGemini: Boolean(secrets.geminiApiKey || process.env.GEMINI_API_KEY),
+        hasAnthropic: Boolean(secrets.anthropicApiKey || process.env.ANTHROPIC_API_KEY),
+        hasOpenai: Boolean(secrets.openaiApiKey || process.env.OPENAI_API_KEY),
+        ollamaUrl: config.ollamaUrl
+      }
+    });
+
+    return res.json({
+      success: true,
+      message: 'Configuration updated and applied.',
       activeProvider: config.activeProvider,
       hybridRoutingPolicy: config.hybridRoutingPolicy,
-      hasGemini: Boolean(secrets.geminiApiKey || process.env.GEMINI_API_KEY),
-      hasAnthropic: Boolean(secrets.anthropicApiKey || process.env.ANTHROPIC_API_KEY),
-      hasOpenai: Boolean(secrets.openaiApiKey || process.env.OPENAI_API_KEY),
-      ollamaUrl: config.ollamaUrl
-    }
-  });
-
-  return res.json({
-    success: true,
-    message: 'Configuration updated and applied.',
-    activeProvider: config.activeProvider,
-    hybridRoutingPolicy: config.hybridRoutingPolicy,
-    hasGeminiKey: Boolean(secrets.geminiApiKey || process.env.GEMINI_API_KEY),
-    hasAnthropicKey: Boolean(secrets.anthropicApiKey || process.env.ANTHROPIC_API_KEY),
-    hasOpenaiKey: Boolean(secrets.openaiApiKey || process.env.OPENAI_API_KEY),
-    ollamaUrl: config.ollamaUrl,
-    preferLocalOllama: config.preferLocalOllama
-  });
+      hasGeminiKey: Boolean(secrets.geminiApiKey || process.env.GEMINI_API_KEY),
+      hasAnthropicKey: Boolean(secrets.anthropicApiKey || process.env.ANTHROPIC_API_KEY),
+      hasOpenaiKey: Boolean(secrets.openaiApiKey || process.env.OPENAI_API_KEY),
+      ollamaUrl: config.ollamaUrl,
+      preferLocalOllama: config.preferLocalOllama
+    });
+  } catch (err) {
+    return res.status(400).json({ error: err.message || 'Failed to update configuration.' });
+  }
 });
 
 // Workspaces management (Phase 10.2)
@@ -761,8 +934,9 @@ wss.on('connection', (ws, req) => {
 });
 
 // Start listening - strictly bound to loopback HOST (127.0.0.1) unless intentional override
-server.listen(PORT, HOST, () => {
-  console.log(`
+if (require.main === module) {
+  server.listen(PORT, HOST, () => {
+    console.log(`
 ==========================================================
    🚀 ANTIGRAVITY LOCAL AGENT ENGINE ONLINE
 ==========================================================
@@ -776,7 +950,8 @@ server.listen(PORT, HOST, () => {
    Routing Policy:  ${config.hybridRoutingPolicy || 'balanced'}
 ==========================================================
 `);
-});
+  });
+}
 
 // Handle graceful exit
 process.on('SIGINT', async () => {
@@ -804,5 +979,9 @@ module.exports = {
   PORT,
   HOST,
   AUTH_TOKEN,
-  PAIRING_CODE
+  PAIRING_CODE,
+  isLoopbackAddress,
+  validateLoopbackRequest,
+  writeAtomicJsonSync
 };
+

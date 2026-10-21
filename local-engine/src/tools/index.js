@@ -283,7 +283,14 @@ class ToolRegistry {
       });
 
       try {
-        await Promise.race([promise, abortPromise]);
+        const approvalRes = await Promise.race([promise, abortPromise]);
+        if (record && record.paramHash) {
+          const crypto = require('crypto');
+          const currentHash = crypto.createHash('sha256').update(JSON.stringify(params || {})).digest('hex');
+          if (currentHash !== record.paramHash) {
+            throw new Error(`Security Violation: Parameters for action "${toolName}" were altered after approval was requested. Execution aborted.`);
+          }
+        }
       } finally {
         if (abortSignal && abortHandler) {
           abortSignal.removeEventListener('abort', abortHandler);

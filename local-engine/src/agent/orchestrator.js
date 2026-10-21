@@ -219,7 +219,30 @@ class AgentOrchestrator {
   }
 
   // --- LLM Multi-step ReAct Loop ---
-  async runLlmReActLoop(task, context, provider, notify, abortSignal) {
+  async runLlmReActLoop(task, context, provider, notify, abortSignal, policy) {
+    const isCloudProvider = provider.constructor.name !== 'OllamaProvider' &&
+                            provider.constructor.name !== 'FallbackAgentProvider';
+    const activePolicy = policy || this.config.hybridRoutingPolicy || 'balanced';
+
+    // Enforce Privacy-First at initial outbound boundary: Never transmit local tasks to cloud models
+    if (activePolicy === 'privacy-first' && isCloudProvider) {
+      const router = new HybridRouter(this.config);
+      const classification = router.classifyTask(task, context);
+      if (classification.isLocalOperation || classification.isSensitive) {
+        notify({
+          type: 'PROVIDER_SWITCH',
+          provider: 'autonomous',
+          reason: 'Privacy-First Policy: Local workspace operation cannot be transmitted to cloud. Transferred to local Autonomous Engine.'
+        });
+        notify({
+          type: 'AGENT_MESSAGE',
+          message: '🔒 Privacy-First: Switched to Built-in Autonomous Engine to process local data securely without cloud transmission.'
+        });
+        const fallback = new FallbackAgentProvider(this.toolRegistry);
+        return this.runAutonomousFallback(task, context, fallback, notify, abortSignal);
+      }
+    }
+
     const tools = this.toolRegistry.getToolDefinitions();
     const messages = [
       { role: 'system', content: SYSTEM_PROMPT },
@@ -311,13 +334,11 @@ class AgentOrchestrator {
           });
 
           // Enforce Privacy-First rule at the exact boundary where local content could be sent to a cloud provider
-          const activePolicy = policy || this.config.hybridRoutingPolicy || 'balanced';
           const localContentTools = [
             'read_file', 'search_files', 'list_files', 'file_info',
-            'write_file', 'patch_file', 'delete_file', 'execute_command', 'clipboard_read'
+            'write_file', 'patch_file', 'delete_file', 'execute_command',
+            'clipboard_read', 'clipboard_write', 'launch_application', 'get_system_info'
           ];
-          const isCloudProvider = provider.constructor.name !== 'OllamaProvider' &&
-                                  provider.constructor.name !== 'FallbackAgentProvider';
 
           if (activePolicy === 'privacy-first' && localContentTools.includes(tool) && isCloudProvider) {
             notify({
@@ -368,6 +389,22 @@ class AgentOrchestrator {
               summary: deniedSummary
             });
             return { success: false, summary: deniedSummary };
+          }
+
+          // Under Privacy-First, do NOT leak local tool errors to cloud model
+          const localContentTools = [
+            'read_file', 'search_files', 'list_files', 'file_info',
+            'write_file', 'patch_file', 'delete_file', 'execute_command',
+            'clipboard_read', 'clipboard_write', 'launch_application', 'get_system_info'
+          ];
+          if (activePolicy === 'privacy-first' && localContentTools.includes(tool) && isCloudProvider) {
+            notify({
+              type: 'PROVIDER_SWITCH',
+              provider: 'autonomous',
+              reason: `Privacy-First Policy: Error during local tool execution (${tool}). Transferring to Autonomous Engine.`
+            });
+            const fallback = new FallbackAgentProvider(this.toolRegistry);
+            return this.runAutonomousFallback(task, context, fallback, notify, abortSignal);
           }
 
           messages.push({

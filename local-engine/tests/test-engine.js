@@ -612,6 +612,138 @@ async function runTests() {
     assert.strictEqual(listRisk.needsApproval, false);
   });
 
+  // 20. Loopback Address Normalization & Validation (Section 4.1)
+  await test('Loopback Validation: Correctly normalizes and validates loopback peer addresses', async () => {
+    const { isLoopbackAddress } = require('../src/server');
+
+    assert.strictEqual(isLoopbackAddress('127.0.0.1'), true, 'Standard IPv4 loopback must be accepted');
+    assert.strictEqual(isLoopbackAddress('::1'), true, 'Standard IPv6 loopback must be accepted');
+    assert.strictEqual(isLoopbackAddress('::ffff:127.0.0.1'), true, 'IPv4-mapped IPv6 loopback must be accepted');
+    assert.strictEqual(isLoopbackAddress('127.0.0.2'), true, 'Subnet 127.0.0.0/8 must be accepted');
+    assert.strictEqual(isLoopbackAddress('192.168.1.100'), false, 'LAN IP must be rejected');
+    assert.strictEqual(isLoopbackAddress('10.0.0.1'), false, 'Private network IP must be rejected');
+    assert.strictEqual(isLoopbackAddress('8.8.8.8'), false, 'Public IP must be rejected');
+    assert.strictEqual(isLoopbackAddress(''), false, 'Empty IP must be rejected');
+    assert.strictEqual(isLoopbackAddress(null), false, 'Null IP must be rejected');
+  });
+
+  // 21. Request Loopback Validation & Host Header Spoofing Defense (Section 4.1)
+  await test('Loopback Defense: Never treats Host header or X-Forwarded-For alone as proof of loopback', async () => {
+    const { validateLoopbackRequest } = require('../src/server');
+
+    // Case A: Loopback socket with valid loopback Host
+    const goodReq = {
+      socket: { remoteAddress: '127.0.0.1' },
+      headers: { host: 'localhost:3721' }
+    };
+    assert.strictEqual(validateLoopbackRequest(goodReq).valid, true);
+
+    // Case B: External socket spoofing Host: localhost
+    const spoofedHostReq = {
+      socket: { remoteAddress: '198.51.100.5' },
+      headers: { host: 'localhost:3721' }
+    };
+    const spoofCheck = validateLoopbackRequest(spoofedHostReq);
+    assert.strictEqual(spoofCheck.valid, false, 'External socket spoofing Host: localhost MUST be rejected');
+    assert.ok(spoofCheck.reason.includes('not a valid local loopback address'));
+
+    // Case C: External socket spoofing X-Forwarded-For: 127.0.0.1
+    const forwardedHeaderReq = {
+      socket: { remoteAddress: '203.0.113.195' },
+      headers: {
+        host: '127.0.0.1:3721',
+        'x-forwarded-for': '127.0.0.1'
+      }
+    };
+    const forwardedCheck = validateLoopbackRequest(forwardedHeaderReq);
+    assert.strictEqual(forwardedCheck.valid, false, 'X-Forwarded-For must NOT bypass physical socket check');
+
+    // Case D: Loopback socket with spoofed external Host header
+    const badHostOnLoopback = {
+      socket: { remoteAddress: '127.0.0.1' },
+      headers: { host: 'attacker.evil.com:3721' }
+    };
+    const badHostCheck = validateLoopbackRequest(badHostOnLoopback);
+    assert.strictEqual(badHostCheck.valid, false, 'Spoofed external Host on loopback must be rejected');
+  });
+
+  // 22. Atomic JSON File Persistence (Section 5.2)
+  await test('Atomic Persistence: writeAtomicJsonSync writes data failure-safely and handles temp cleanup', async () => {
+    const { writeAtomicJsonSync } = require('../src/server');
+    const testAtomicPath = path.join(testLogsDir, 'atomic_test.json');
+    const testData = { message: 'Atomic write verification', count: 42 };
+
+    writeAtomicJsonSync(testAtomicPath, testData);
+    assert.strictEqual(fs.existsSync(testAtomicPath), true);
+    const read = JSON.parse(fs.readFileSync(testAtomicPath, 'utf8'));
+    assert.strictEqual(read.message, 'Atomic write verification');
+    assert.strictEqual(read.count, 42);
+
+    // Ensure no orphan .tmp files left behind
+    const files = fs.readdirSync(testLogsDir);
+    const tmpFiles = files.filter(f => f.includes('.tmp.'));
+    assert.strictEqual(tmpFiles.length, 0, 'Temporary files must be renamed into place cleanly without leaving remnants');
+  });
+
+  // 23. Path Defense: Rejects UNC Network Shares (Section 7.2)
+  await test('Path Defense: Rejects UNC network share paths (e.g. \\\\attacker\\share)', async () => {
+    const pm = new PermissionManager({ approvedDirectories: [workspaceRoot] });
+
+    assert.strictEqual(pm.isPathApproved('\\\\evil-server\\share\\exploit.exe'), false);
+    assert.strictEqual(pm.isPathApproved('//evil-server/share/exploit.exe'), false);
+
+    const uncRisk = pm.analyzeActionRisk('read_file', { filePath: '\\\\192.168.1.5\\share\\stolen.txt' });
+    assert.strictEqual(uncRisk.blocked, true);
+    assert.strictEqual(uncRisk.riskLevel, 'forbidden');
+  });
+
+  // 24. Parameter Tamper Defense: Rejects execution if parameters mutate after approval (Section 7.3)
+  await test('Approval Security: Rejects execution if parameters are tampered with after approval', async () => {
+    const pm = new PermissionManager({
+      approvedDirectories: [workspaceRoot],
+      security: { requireApprovalForShell: true }
+    });
+
+    const localTools = new ToolRegistry(pm, auditLogger, emergencyCoord, mockServerContext);
+    const actionParams = { command: 'echo SafeInitialCommand', cwd: workspaceRoot };
+
+    let tamperDetected = false;
+    try {
+      await localTools.execute(
+        'execute_command',
+        actionParams,
+        (approvalReq) => {
+          // Attacker alters params in-place after approval request was recorded and presented
+          actionParams.command = 'echo MaliciousTamperedCommand';
+          // User clicks approve based on original presentation
+          pm.resolveApproval(approvalReq.approvalId, true);
+        }
+      );
+    } catch (err) {
+      tamperDetected = err.message.includes('altered after approval');
+    }
+    assert.strictEqual(tamperDetected, true, 'Execution must abort if parameters mutate after approval');
+  });
+
+  // 25. Approval Lifecycle: Prevents reuse and enforces expiration (Section 7.3)
+  await test('Approval Lifecycle: Single-use resolution prevents approval replay', async () => {
+    const pm = new PermissionManager({ approvedDirectories: [workspaceRoot] });
+    const { record } = pm.createApprovalRequest('write_file', { filePath: 'foo.txt' }, { riskLevel: 'medium' });
+
+    // First resolution succeeds
+    const res1 = pm.resolveApproval(record.approvalId, true);
+    assert.strictEqual(res1.resolved, true);
+
+    // Second resolution attempt must throw
+    let replayBlocked = false;
+    try {
+      pm.resolveApproval(record.approvalId, true);
+    } catch (e) {
+      replayBlocked = e.message.includes('not found or expired');
+    }
+    assert.strictEqual(replayBlocked, true, 'Replay of resolved approval ID must be rejected');
+  });
+
   // Clean up test log directory
   try {
     fs.rmSync(testLogsDir, { recursive: true, force: true });

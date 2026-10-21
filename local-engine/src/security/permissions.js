@@ -30,6 +30,14 @@ class PermissionManager {
   // Canonicalize a path and resolve symlinks defensively
   canonicalizePath(targetPath) {
     if (!targetPath || typeof targetPath !== 'string') return null;
+    if (targetPath.includes('\0')) return null;
+
+    // Defend against UNC network shares (e.g. \\evil.com\share or //evil.com/share)
+    if (/^[\\\/]{2}/.test(targetPath.trim())) {
+      const isApprovedUnc = this.approvedDirectories.some(d => /^[\\\/]{2}/.test(d));
+      if (!isApprovedUnc) return null;
+    }
+
     try {
       const resolved = path.resolve(targetPath);
       if (fs.existsSync(resolved)) {
@@ -121,6 +129,12 @@ class PermissionManager {
     // Detect basic null bytes or malformed inputs
     if (targetPath.includes('\0')) return false;
 
+    // Defend against UNC network shares unless explicitly approved
+    if (/^[\\\/]{2}/.test(targetPath.trim())) {
+      const isApprovedUnc = this.approvedDirectories.some(d => /^[\\\/]{2}/.test(d));
+      if (!isApprovedUnc) return false;
+    }
+
     const canonicalTarget = this.canonicalizePath(targetPath);
     if (!canonicalTarget) return false;
 
@@ -130,6 +144,13 @@ class PermissionManager {
     return this.approvedDirectories.some(approved => {
       const canonicalApproved = this.canonicalizePath(approved) || approved;
       const normApproved = isWindows ? canonicalApproved.toLowerCase() : canonicalApproved;
+
+      // On Windows, verify drive roots match (prevent cross-drive relative traversal)
+      if (isWindows) {
+        const rootApproved = path.parse(normApproved).root.toLowerCase();
+        const rootTarget = path.parse(normTarget).root.toLowerCase();
+        if (rootApproved !== rootTarget) return false;
+      }
 
       const relative = path.relative(normApproved, normTarget);
       return !relative.startsWith('..') && !path.isAbsolute(relative);
@@ -309,12 +330,7 @@ class PermissionManager {
           }
         }
 
-        // Check if command is already session-authorized
-        if (this.sessionAuthorizations.has(`cmd:${cmd}`)) {
-          return { allowed: true, needsApproval: false, riskLevel: 'medium' };
-        }
-
-        // Shell executions require confirmation by default
+        // Shell executions require confirmation by default per Security Policy
         if (this.config.security?.requireApprovalForShell !== false) {
           return {
             allowed: false,
@@ -356,27 +372,35 @@ class PermissionManager {
 
   // Request interactive approval from user
   createApprovalRequest(tool, params, riskAssessment) {
-    const approvalId = `appr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const approvalId = `appr_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    const paramSnapshot = JSON.parse(JSON.stringify(params || {}));
+    const paramHash = crypto.createHash('sha256').update(JSON.stringify(paramSnapshot)).digest('hex');
+
     let resolveFn, rejectFn;
     const promise = new Promise((resolve, reject) => {
       resolveFn = resolve;
       rejectFn = reject;
     });
 
+    const timeoutMs = 180000; // 3 minutes TTL
+    const expiresAt = Date.now() + timeoutMs;
+
     const timeout = setTimeout(() => {
       if (this.pendingApprovals.has(approvalId)) {
         this.pendingApprovals.delete(approvalId);
         rejectFn(new Error(`Approval request ${approvalId} timed out after 3 minutes.`));
       }
-    }, 180000);
+    }, timeoutMs);
 
     const record = {
       approvalId,
       tool,
-      params,
+      params: paramSnapshot,
+      paramHash,
       riskLevel: riskAssessment.riskLevel,
       actionType: riskAssessment.reason || `Authorize ${tool}`,
       createdAt: new Date().toISOString(),
+      expiresAt,
       resolve: (val) => { clearTimeout(timeout); resolveFn(val); },
       reject: (err) => { clearTimeout(timeout); rejectFn(err); }
     };
@@ -392,13 +416,22 @@ class PermissionManager {
       throw new Error(`Approval request ${approvalId} not found or expired.`);
     }
 
+    // Immediately remove from pending map to prevent replay attacks
     this.pendingApprovals.delete(approvalId);
+
+    // Enforce expiry
+    if (Date.now() > record.expiresAt) {
+      const expErr = new Error(`Approval request ${approvalId} has expired.`);
+      record.reject(expErr);
+      throw expErr;
+    }
+
     if (isApproved) {
-      record.resolve({ approved: true });
+      record.resolve({ approved: true, paramHash: record.paramHash, tool: record.tool });
     } else {
       record.reject(new Error(`Action ${record.tool} was denied by the user.`));
     }
-    return { resolved: true, approvalId, approved: isApproved };
+    return { resolved: true, approvalId, approved: isApproved, paramHash: record.paramHash };
   }
 
   // Reject all pending approvals (used during emergency stop)

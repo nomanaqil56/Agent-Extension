@@ -151,16 +151,19 @@ Upon startup, an ephemeral **8-character Pairing Code** is displayed in the engi
 
 ## 🛠️ Testing & Verification
 
-Run the verification suite to execute automated unit, security, and WebSocket integration tests:
+Run the verification suite to execute automated unit, security, privacy, and WebSocket integration tests:
 
 ```bash
-# Run unit & security sandbox tests
+# Run unit & security sandbox tests (42 checks)
 npm run test:engine
 
-# Run End-to-End WebSocket, Pairing, and Settings test suite
+# Run End-to-End WebSocket, Pairing, CORS, and Settings test suite
 npm run test:e2e
 
-# Run complete diagnostic verification (checks syntax, manifest, secrets, and tests)
+# Run Privacy-First Sentinel Leak Prevention tests (7 checks)
+npm run test:privacy
+
+# Run complete diagnostic verification (checks syntax, manifest, secrets, and all test suites)
 npm run verify
 ```
 
@@ -169,9 +172,27 @@ npm run verify
 ## 🔒 Security Architecture & Secret Isolation
 
 - **Zero Tracked Secrets**: API keys and authentication tokens are strictly stored in local untracked files (`local-engine/.secrets.json` and `.env`). `config.json` contains only non-secret settings.
-- **Pairing Lifecycle**: Pairing codes are ephemeral (5-minute TTL), single-use (consumed upon successful handshake), and protected against brute-force (locked after 5 failed attempts).
+- **Atomic File Persistence**: Secrets and configuration files are written using atomic `.tmp` file creation, `fsync`, and atomic rename (with fallback collision handling on Windows) to prevent configuration corruption or half-written states.
+- **Loopback Enforcement & CORS**: The engine validates the raw physical socket address (`req.socket.remoteAddress`) for IPv4 `127.0.0.1`, IPv6 `::1`, and IPv4-mapped IPv6 `::ffff:127.0.0.1`, rejecting spoofed Host or proxy headers (`X-Forwarded-For`). Cross-origin requests from arbitrary web pages (`https://...`) are blocked.
+- **Pairing Lifecycle & Recovery**: Pairing codes are ephemeral (5-minute TTL), single-use (consumed upon successful handshake), and protected against brute-force (locked after 5 failed attempts). If a code expires or is locked out:
+  - Restart the engine (`npm run start:engine`) to generate a new pairing code.
+  - Alternatively, if running locally, copy the `authToken` from `local-engine/.secrets.json` into Settings directly.
 - **HTTP & WebSocket Authentication**: All state-changing REST endpoints require `Authorization: Bearer <token>`. WebSocket connections authenticate via an immediate `AUTH_HANDSHAKE` message over the socket; tokens in URL query strings are rejected.
-- **Privacy-First Boundary**: Local workspace file observations are never sent to cloud models. When local files are accessed under Privacy-First, execution switches to the local Autonomous Engine.
+- **Approval Verification & Single-Use**: Action approvals are single-use, expire after a 3-minute TTL, and verify a SHA-256 parameter digest (`paramHash`) at execution time to prevent parameter-tampering attacks.
+- **Privacy-First Sentinel Boundary**: Outbound requests to cloud providers are verified via dedicated sentinel testing (`test:privacy`). Prohibited local filesystem contents, clipboard contents, terminal outputs, and `.env` credentials are blocked from transmission to cloud models. When local tasks execute under Privacy-First, the engine automatically routes to the local Autonomous Engine or Ollama.
+
+---
+
+## 🚨 Common Errors & Troubleshooting
+
+| Error / Symptom | Root Cause | Solution |
+| :--- | :--- | :--- |
+| **`Connection Refused :3721`** | Local engine is not running | Run `npm run start:engine` in your terminal. |
+| **`403 Forbidden` on `/pair`** | Invalid or spoofed Host header, or non-loopback connection | Connect directly via `http://127.0.0.1:3721` from the local browser. |
+| **`Pairing code expired or max attempts exceeded`** | Code timed out (5 min) or failed 5 times | Restart the engine (`npm run start:engine`) to generate a fresh pairing code. |
+| **`Action Rejected: Path is outside approved workspace(s)`** | File operation attempted outside approved root | In **Settings**, click **+ Add Workspace** and enter your workspace path. |
+| **`Emergency Stop Triggered`** | Stop button was pressed | Tool execution is locked. Restart or reset the task before dispatching new instructions. |
+| **`Provider not ready / unconfigured`** | Missing cloud API key in Manual mode | Configure your API key in **Settings**, switch to **Autonomous Engine**, or use **Balanced** mode. |
 
 ---
 
@@ -180,3 +201,5 @@ npm run verify
 - **Emergency Stop Limitations**: The Emergency Stop terminates managed child processes (via PID tree termination on Windows / SIGTERM on POSIX) and aborts active orchestration loops. External processes spawned outside the engine's supervision cannot be terminated automatically.
 - **External Providers**: Cloud providers (Gemini, Claude, OpenAI) require active API keys. If keys are not configured, the engine operates via the offline Autonomous Engine or local Ollama.
 - **Voice Dictation**: Requires browser microphone permissions and an internet connection for the browser's built-in Web Speech API service.
+- **Browser-Internal Pages**: Chromium prevents extensions from automating `chrome://`, `brave://`, or web store pages due to browser security policies.
+

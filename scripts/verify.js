@@ -143,8 +143,17 @@ try {
   check('E2E WebSocket, Pairing, and Settings Suite', false, e.message);
 }
 
-// 6. External Environment & Live Inference Status
-console.log('\n[6] External Provider Live Inference Status:');
+// 6. Automated Privacy-First Boundary Sentinel Tests
+console.log('\n[6] Running Automated Privacy-First Boundary Sentinel Tests:');
+try {
+  execSync('npm run test:privacy', { cwd: path.join(root, 'local-engine'), stdio: 'inherit' });
+  check('Privacy-First Outbound Boundary Sentinel Suite passed', true);
+} catch (e) {
+  check('Privacy-First Outbound Boundary Sentinel Suite', false, e.message);
+}
+
+// 7. External Environment & Live Inference Status
+console.log('\n[7] External Provider Live Inference Status:');
 if (process.env.GEMINI_API_KEY) {
   check('Live Gemini provider configured via environment', true);
 } else {
@@ -171,8 +180,8 @@ try {
   skip('Live local Ollama daemon', 'Ollama is not running locally on port 11434 (offline fallback active)');
 }
 
-// 7. Manual Validation Checkpoints
-console.log('\n[7] Manual Validation Requirements:');
+// 8. Manual Validation Checkpoints
+console.log('\n[8] Manual Validation Requirements:');
 manual('Browser Extension UI', 'Load unpacked extension in Brave/Chrome via chrome://extensions, pin extension, and press Alt+Shift+A to verify side panel opens');
 manual('First-run Pairing UI', 'Start engine (`npm run start:engine`), copy pairing code into Settings tab, click Pair Engine, and verify green status pill');
 manual('Workspace Approval UI', 'In Side Panel Settings tab, approve a project folder and verify file actions succeed in that folder and are blocked outside');
