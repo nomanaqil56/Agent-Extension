@@ -12,6 +12,9 @@ local-engine/.secrets.json
 .vault.enc
 *.vault.enc
 local-engine/.vault.enc
+.vault.enc.key
+*.vault.enc.key
+local-engine/.vault.enc.key
 
 # Logs and audit data
 logs/

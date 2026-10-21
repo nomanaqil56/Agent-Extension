@@ -23,9 +23,11 @@ const ModelManager = require('./agent/models');
 
 const crypto = require('crypto');
 
-// Configuration paths: public config.json vs untracked local .secrets.json
+// Credential Vault: Authoritative secret store (Section 7.1)
+const credentialVault = new CredentialVault();
+
+// Configuration paths: public config.json strictly non-secret
 const configPath = process.env.ENGINE_CONFIG_PATH || path.join(__dirname, '..', 'config.json');
-const secretsPath = process.env.ENGINE_SECRETS_PATH || path.join(__dirname, '..', '.secrets.json');
 
 let config = {
   port: 3721,
@@ -53,14 +55,7 @@ let config = {
   }
 };
 
-let secrets = {
-  authToken: '',
-  geminiApiKey: '',
-  anthropicApiKey: '',
-  openaiApiKey: ''
-};
-
-// Load public configuration
+// Load public non-secret configuration
 try {
   if (fs.existsSync(configPath)) {
     const raw = fs.readFileSync(configPath, 'utf8');
@@ -70,26 +65,16 @@ try {
   console.warn('[Server] Using default configuration');
 }
 
-// Load private secrets
-try {
-  if (fs.existsSync(secretsPath)) {
-    const rawSecrets = fs.readFileSync(secretsPath, 'utf8');
-    secrets = { ...secrets, ...JSON.parse(rawSecrets) };
-  }
-} catch (e) {
-  console.warn('[Server] No .secrets.json loaded; will initialize on first secret creation');
-}
-
-// Secret Migration: strip secrets out of tracked config.json into untracked .secrets.json
+// Strip any accidental secrets out of config.json and migrate to vault
 let configNeedsCleaning = false;
 ['authToken', 'geminiApiKey', 'anthropicApiKey', 'openaiApiKey', 'geminiKey', 'anthropicKey', 'openAiKey', 'openaiKey'].forEach(k => {
   if (config[k]) {
-    const canonicalKey = k.toLowerCase().includes('gemini') ? 'geminiApiKey' :
-      k.toLowerCase().includes('anthropic') ? 'anthropicApiKey' :
-      k.toLowerCase().includes('openai') ? 'openaiApiKey' :
-      k === 'authToken' ? 'authToken' : k;
-    if (!secrets[canonicalKey]) {
-      secrets[canonicalKey] = config[k];
+    const id = k.toLowerCase().includes('gemini') ? 'gemini' :
+      k.toLowerCase().includes('anthropic') ? 'anthropic' :
+      k.toLowerCase().includes('openai') ? 'openai' :
+      k === 'authToken' ? 'auth_token' : k;
+    if (!credentialVault.hasSecret(id)) {
+      credentialVault.storeSecret(id, config[k], { category: id === 'auth_token' ? 'system_token' : 'provider_key' });
     }
     delete config[k];
     configNeedsCleaning = true;
@@ -142,27 +127,10 @@ function writeAtomicJsonSync(filePath, data, fileMode = 0o600) {
   }
 }
 
-// Helper: Safely persist .secrets.json using atomic file persistence
-function persistSecretsFile() {
-  try {
-    writeAtomicJsonSync(secretsPath, secrets, 0o600);
-    return true;
-  } catch (err) {
-    console.warn('[Server] Could not persist .secrets.json:', err.message);
-    return false;
-  }
-}
-
-// Secret Migration: persist private secrets first; only clean config.json after persistence succeeds
 if (configNeedsCleaning) {
-  const saved = persistSecretsFile();
-  if (saved) {
-    try {
-      writeAtomicJsonSync(configPath, config, 0o644);
-    } catch (e) {}
-  } else {
-    console.warn('[Server] Secret migration aborted: Could not save .secrets.json safely');
-  }
+  try {
+    writeAtomicJsonSync(configPath, config, 0o644);
+  } catch (e) {}
 }
 
 const PORT = parseInt(process.env.ENGINE_PORT || config.port, 10) || 3721;
@@ -173,13 +141,12 @@ if (HOST !== '127.0.0.1' && HOST !== 'localhost') {
   console.warn(`\n⚠️  [SECURITY WARNING] Local Engine is bound to non-loopback host "${HOST}". Ensure network isolation.`);
 }
 
-// Token setup: precedence = process.env -> secrets.authToken -> generate secure random token
-let AUTH_TOKEN = (process.env.ENGINE_AUTH_TOKEN || secrets.authToken || '').trim();
+// Token setup: precedence = process.env -> credentialVault -> generate secure random token in vault
+let AUTH_TOKEN = (process.env.ENGINE_AUTH_TOKEN || credentialVault.getAuthToken() || '').trim();
 if (!AUTH_TOKEN) {
   AUTH_TOKEN = crypto.randomBytes(32).toString('hex');
-  secrets.authToken = AUTH_TOKEN;
-  persistSecretsFile();
-  console.log('[Server] Secure persistent authentication token initialized in .secrets.json.');
+  credentialVault.setAuthToken(AUTH_TOKEN);
+  console.log('[Server] Secure persistent authentication token initialized in Credential Vault.');
 }
 
 // Ephemeral pairing state with entropy, 5-minute expiry, lockout, and single-use consumption
@@ -291,9 +258,8 @@ const permissionManager = new PermissionManager(config);
 const auditLogger = new AuditLogger();
 const emergencyCoordinator = new EmergencyCoordinator(permissionManager, auditLogger);
 const memoryManager = new MemoryManager();
-const credentialVault = new CredentialVault();
 const credentialBroker = new CredentialBroker(credentialVault, permissionManager, auditLogger);
-const modelManager = new ModelManager({ ...config, ...secrets }, credentialVault);
+const modelManager = new ModelManager(config, credentialVault);
 
 // Server context for browser bridge
 let extensionClient = null;
@@ -312,7 +278,7 @@ const toolRegistry = new ToolRegistry(
 const orchestrator = new AgentOrchestrator(
   toolRegistry,
   memoryManager,
-  { ...config, ...secrets },
+  config,
   modelManager,
   credentialBroker
 );
@@ -521,11 +487,11 @@ app.get('/engine-info', authenticateHttp, (req, res) => {
   });
 });
 
-// Configuration retrieval (Secrets safely masked from .secrets.json)
+// Configuration retrieval (Secrets safely retrieved from Credential Vault and masked)
 app.get('/config', authenticateHttp, (req, res) => {
-  const geminiKey = secrets.geminiApiKey || process.env.GEMINI_API_KEY || '';
-  const anthropicKey = secrets.anthropicApiKey || process.env.ANTHROPIC_API_KEY || '';
-  const openaiKey = secrets.openaiApiKey || process.env.OPENAI_API_KEY || '';
+  const geminiKey = credentialVault.getSecret('gemini') || process.env.GEMINI_API_KEY || '';
+  const anthropicKey = credentialVault.getSecret('anthropic') || process.env.ANTHROPIC_API_KEY || '';
+  const openaiKey = credentialVault.getSecret('openai') || process.env.OPENAI_API_KEY || '';
   const ollamaUrl = config.ollamaUrl || process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
   const ollamaModel = config.ollamaModel || process.env.OLLAMA_MODEL || 'llama3';
 
@@ -549,7 +515,7 @@ app.get('/config', authenticateHttp, (req, res) => {
   });
 });
 
-// Authenticated Configuration Update (Canonical schema with strict validation and safe secret persistence)
+// Authenticated Configuration Update (Persists non-secret config to config.json and secrets to CredentialVault)
 app.post('/config', authenticateHttp, (req, res) => {
   try {
     const {
@@ -570,10 +536,7 @@ app.post('/config', authenticateHttp, (req, res) => {
       allowedExtensionIds
     } = req.body || {};
 
-    // Create candidate staging objects to ensure transactional behavior
     const candidateConfig = { ...config };
-    const candidateSecrets = { ...secrets };
-
     const targetProvider = activeProvider !== undefined ? activeProvider : selectedProvider;
 
     // 1. Validate Provider Enum
@@ -642,53 +605,31 @@ app.post('/config', authenticateHttp, (req, res) => {
       candidateConfig.allowedExtensionIds = allowedExtensionIds.map(s => String(s).trim()).filter(Boolean);
     }
 
-    // 6. Update secret keys with strict validation and explicit semantics:
-    // - Omitted or containing '••••': preserve existing secret
-    // - Explicit null or empty string "": delete credential
-    // - New non-empty string: validate and update credential
-    let secretsChanged = false;
-
-    const handleSecretField = (key, val) => {
+    // 6. Update secret keys directly in encrypted Credential Vault (Section 7.1 & 7.4)
+    const handleVaultSecret = (vaultId, val, providerName) => {
       if (val === undefined) return;
-      if (typeof val === 'string' && val.includes('••••')) return;
+      if (typeof val === 'string' && (val.includes('••••') || val.includes('...'))) return;
       if (val === null || val === '') {
-        if (candidateSecrets[key] !== '') {
-          candidateSecrets[key] = '';
-          secretsChanged = true;
-        }
+        credentialVault.deleteSecret(vaultId);
       } else if (typeof val === 'string') {
         const trimmed = val.trim();
         if (trimmed.length > 512) {
-          throw new Error(`API key for ${key} exceeds maximum length (512 characters).`);
+          throw new Error(`API key for ${vaultId} exceeds maximum length (512 characters).`);
         }
         if (/[\x00-\x1F\x7F]/.test(trimmed)) {
-          throw new Error(`API key for ${key} contains invalid control characters.`);
+          throw new Error(`API key for ${vaultId} contains invalid control characters.`);
         }
-        if (trimmed.length > 0 && candidateSecrets[key] !== trimmed) {
-          candidateSecrets[key] = trimmed;
-          secretsChanged = true;
+        if (trimmed.length > 0) {
+          credentialVault.storeSecret(vaultId, trimmed, { category: 'provider_key', provider: providerName });
         }
       } else {
-        throw new Error(`Invalid type for credential ${key}; expected string.`);
+        throw new Error(`Invalid type for credential ${vaultId}; expected string.`);
       }
     };
 
-    handleSecretField('geminiApiKey', geminiApiKey ?? geminiKey);
-    handleSecretField('anthropicApiKey', anthropicApiKey ?? anthropicKey);
-    handleSecretField('openaiApiKey', openaiApiKey ?? openAiKey ?? openaiKey);
-
-    // Transactional durability phase: Persist to disk before mutating memory state
-    let secretsPersisted = false;
-    if (secretsChanged) {
-      try {
-        writeAtomicJsonSync(secretsPath, candidateSecrets, 0o600);
-        secretsPersisted = true;
-      } catch (secErr) {
-        return res.status(500).json({
-          error: `Failed to persist credentials: ${secErr.message}. No settings were modified.`
-        });
-      }
-    }
+    handleVaultSecret('gemini', geminiApiKey ?? geminiKey, 'gemini');
+    handleVaultSecret('anthropic', anthropicApiKey ?? anthropicKey, 'anthropic');
+    handleVaultSecret('openai', openaiApiKey ?? openAiKey ?? openaiKey, 'openai');
 
     // Prepare non-secret config to save
     const toSaveConfig = {
@@ -706,46 +647,17 @@ app.post('/config', authenticateHttp, (req, res) => {
       security: candidateConfig.security || config.security
     };
 
-    try {
-      writeAtomicJsonSync(configPath, toSaveConfig, 0o644);
-    } catch (cfgErr) {
-      // Rollback secrets file if previously written
-      if (secretsPersisted) {
-        try {
-          writeAtomicJsonSync(secretsPath, secrets, 0o600);
-        } catch (rbErr) {
-          console.error('[Server] Secret rollback failed:', rbErr.message);
-        }
-      }
-      return res.status(500).json({
-        error: `Failed to persist configuration file: ${cfgErr.message}. Changes were rolled back.`
-      });
-    }
+    writeAtomicJsonSync(configPath, toSaveConfig, 0o644);
 
-    // Both persistence writes succeeded: Commit candidate states to in-memory runtime
     config = candidateConfig;
-    secrets = candidateSecrets;
 
-    // Synchronize encrypted Credential Vault (Section 9)
-    if (secrets.geminiApiKey) {
-      credentialVault.storeSecret('gemini', secrets.geminiApiKey, { category: 'provider_key', provider: 'gemini' });
-    } else if (candidateSecrets.geminiApiKey === '') {
-      credentialVault.deleteSecret('gemini');
-    }
-    if (secrets.openaiApiKey) {
-      credentialVault.storeSecret('openai', secrets.openaiApiKey, { category: 'provider_key', provider: 'openai' });
-    } else if (candidateSecrets.openaiApiKey === '') {
-      credentialVault.deleteSecret('openai');
-    }
-    if (secrets.anthropicApiKey) {
-      credentialVault.storeSecret('anthropic', secrets.anthropicApiKey, { category: 'provider_key', provider: 'anthropic' });
-    } else if (candidateSecrets.anthropicApiKey === '') {
-      credentialVault.deleteSecret('anthropic');
-    }
+    // Dynamically update orchestrator & modelManager config
+    modelManager.updateConfig(config);
+    orchestrator.updateConfig(config);
 
-    // Dynamically update orchestrator & modelManager config with merged settings and credentials
-    modelManager.updateConfig({ ...config, ...secrets });
-    orchestrator.updateConfig({ ...config, ...secrets });
+    const hasGem = Boolean(credentialVault.hasSecret('gemini') || process.env.GEMINI_API_KEY);
+    const hasAnt = Boolean(credentialVault.hasSecret('anthropic') || process.env.ANTHROPIC_API_KEY);
+    const hasOai = Boolean(credentialVault.hasSecret('openai') || process.env.OPENAI_API_KEY);
 
     auditLogger.log({
       action: 'SETTINGS_CONFIGURED',
@@ -754,9 +666,9 @@ app.post('/config', authenticateHttp, (req, res) => {
       params: {
         activeProvider: config.activeProvider,
         hybridRoutingPolicy: config.hybridRoutingPolicy,
-        hasGemini: Boolean(secrets.geminiApiKey || process.env.GEMINI_API_KEY),
-        hasAnthropic: Boolean(secrets.anthropicApiKey || process.env.ANTHROPIC_API_KEY),
-        hasOpenai: Boolean(secrets.openaiApiKey || process.env.OPENAI_API_KEY),
+        hasGemini: hasGem,
+        hasAnthropic: hasAnt,
+        hasOpenai: hasOai,
         ollamaUrl: config.ollamaUrl
       }
     });
@@ -766,9 +678,9 @@ app.post('/config', authenticateHttp, (req, res) => {
       message: 'Configuration updated and applied.',
       activeProvider: config.activeProvider,
       hybridRoutingPolicy: config.hybridRoutingPolicy,
-      hasGeminiKey: Boolean(secrets.geminiApiKey || process.env.GEMINI_API_KEY),
-      hasAnthropicKey: Boolean(secrets.anthropicApiKey || process.env.ANTHROPIC_API_KEY),
-      hasOpenaiKey: Boolean(secrets.openaiApiKey || process.env.OPENAI_API_KEY),
+      hasGeminiKey: hasGem,
+      hasAnthropicKey: hasAnt,
+      hasOpenaiKey: hasOai,
       ollamaUrl: config.ollamaUrl,
       preferLocalOllama: config.preferLocalOllama
     });

@@ -55,6 +55,17 @@ class PermissionManager {
     return true;
   }
 
+  // Helper: extract clean hostname domain from URL
+  extractDomain(url) {
+    if (!url || typeof url !== 'string') return null;
+    try {
+      const parsed = new URL(url.startsWith('http') ? url : `https://${url}`);
+      return parsed.hostname.toLowerCase().replace(/^www\./, '');
+    } catch (e) {
+      return null;
+    }
+  }
+
   // Add a structured permission grant (Section 12)
   addGrant({ action, resource, scope = 'task', lifetimeMs = 3600000, riskLevel = 'medium' }) {
     if (!action) return null;
@@ -535,11 +546,56 @@ class PermissionManager {
         return { allowed: true, needsApproval: false, riskLevel: 'medium' };
       }
 
-      // Browser active clicks & forms
-      case 'browser_click':
-      case 'browser_fill':
+      // Browser active clicks & forms (Section 9: Website and Browser Security)
+      case 'browser_click': {
+        const target = (params.target || '').toLowerCase();
+        const sensitiveClickPatterns = [
+          'submit', 'pay', 'purchase', 'buy', 'checkout', 'confirm order',
+          'transfer', 'delete account', 'send message', 'post comment', 'withdraw'
+        ];
+        const isSensitiveClick = sensitiveClickPatterns.some(p => target.includes(p));
+        const domain = params.domain || (params.url ? this.extractDomain(params.url) : null);
+
+        if (isSensitiveClick && (!domain || !this.isDomainAuthorized(domain, 'write'))) {
+          return {
+            allowed: false,
+            needsApproval: true,
+            riskLevel: 'high',
+            reason: `Clicking consequential action element ("${params.target}") requires explicit user authorization.`
+          };
+        }
+        return { allowed: true, needsApproval: false, riskLevel: 'low' };
+      }
+
+      case 'browser_fill': {
+        const target = (params.target || '').toLowerCase();
+        const isSensitiveForm = target.includes('password') || target.includes('credit') || target.includes('card') ||
+                                target.includes('cvv') || target.includes('ssn') || target.includes('pin');
+        const domain = params.domain || (params.url ? this.extractDomain(params.url) : null);
+
+        if (isSensitiveForm && (!domain || !this.isDomainAuthorized(domain, 'write'))) {
+          return {
+            allowed: false,
+            needsApproval: true,
+            riskLevel: 'high',
+            reason: `Entering sensitive input into form field ("${params.target}") requires explicit user authorization.`
+          };
+        }
+        return { allowed: true, needsApproval: false, riskLevel: 'low' };
+      }
+
       case 'browser_navigate':
-      case 'browser_open_tab':
+      case 'browser_open_tab': {
+        const url = (params.url || '').toLowerCase();
+        if (url.startsWith('javascript:') || url.startsWith('data:') || url.startsWith('vbscript:')) {
+          return { allowed: false, needsApproval: false, blocked: true, riskLevel: 'forbidden', reason: 'Dangerous URL scheme blocked by security policy.' };
+        }
+        if (url.startsWith('chrome://') || url.startsWith('brave://') || url.startsWith('edge://')) {
+          return { allowed: false, needsApproval: false, blocked: true, riskLevel: 'forbidden', reason: 'Browser management pages are strictly blocked.' };
+        }
+        return { allowed: true, needsApproval: false, riskLevel: 'low' };
+      }
+
       case 'browser_close_tab':
       case 'browser_switch_tab':
         return { allowed: true, needsApproval: false, riskLevel: 'low' };

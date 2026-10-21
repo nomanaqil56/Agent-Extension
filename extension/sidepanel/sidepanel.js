@@ -898,7 +898,11 @@ document.addEventListener('DOMContentLoaded', () => {
           }
         });
       } else {
-        await runDirectFallbackAgent(promptText, context);
+        appendAgentMessage(
+          `⚠️ **Local Engine Offline**\n\nThe Antigravity Local Engine companion service is not connected.\n\nTo execute tasks across your browser, filesystem, and terminal:\n1. Start the engine from your terminal:\n   \`\`\`bash\n   npm run start:engine\n   \`\`\`\n2. If not paired, enter your Pairing Code in the **Settings** tab.\n3. Click **Reconnect** to establish the secure WebSocket bridge.`,
+          taskConversationId
+        );
+        setProcessing(false);
       }
     } catch (err) {
       appendAgentMessage(`❌ **Agent Error**: ${err.message}`);
@@ -973,46 +977,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Direct Browser Fallback Agent (for zero-config offline mode)
-  async function runDirectFallbackAgent(prompt, context) {
-    showAgentStatus('Autonomous Engine: Analyzing browser action...');
-    await delay(350);
-
-    const lower = prompt.toLowerCase();
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-
-    if (lower.includes('summarize') || lower.includes('summary')) {
-      if (!tab?.id) {
-        appendAgentMessage('No active tab found to summarize.');
-        setProcessing(false);
-        return;
-      }
-      const textRes = await chrome.tabs.sendMessage(tab.id, { action: 'EXTRACT_TEXT' });
-      if (textRes && textRes.content) {
-        const lines = textRes.content.split('\n').filter(l => l.length > 20).slice(0, 5);
-        appendAgentMessage(`### 📑 Page Summary: ${textRes.title}\n\n**URL**: ${textRes.url}\n\n**Key Highlights**:\n` +
-          lines.map(l => `- ${l}`).join('\n') +
-          `\n\n*(Tip: Connect the Local Engine for full multi-step desktop & multi-tab control)*`);
-      } else {
-        appendAgentMessage('Could not extract text from this page.');
-      }
-    } else if (lower.includes('label') || lower.includes('highlight') || lower.includes('buttons')) {
-      if (!tab?.id) return;
-      const res = await chrome.tabs.sendMessage(tab.id, { action: 'LABEL_INTERACTIVE' });
-      appendAgentMessage(`🎯 Labeled **${res.labeledCount || 0}** interactive elements directly on the active webpage.`);
-    } else if (lower.includes('click')) {
-      const words = lower.replace('click', '').trim();
-      const res = await chrome.tabs.sendMessage(tab.id, { action: 'CLICK_ELEMENT', target: words });
-      appendAgentMessage(`✓ Clicked element matching "${words}". Tag: ${res.tagName}, Text: "${res.text}"`);
-    } else if (lower.includes('screenshot') || lower.includes('capture')) {
-      await chrome.runtime.sendMessage({ action: 'DIRECT_BROWSER_ACTION', browserCommand: 'capture_screenshot' });
-      appendAgentMessage(`📸 Tab screenshot captured successfully.`);
-    } else {
-      appendAgentMessage(`💡 **Instruction Received**: "${prompt}"\n\nTo unlock deep multi-step automation (filesystem editing, terminal commands, test runners, and multi-tab workflows), please start the **Local Agent Engine**:\n\`npm run start:engine\``);
-    }
-
-    setProcessing(false);
-  }
 
   // --- 6. Approvals & Security System ---
 

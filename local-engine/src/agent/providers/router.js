@@ -301,10 +301,8 @@ class HybridRouter {
     }
 
     // Policy C: Balanced (Default)
-    // Ordinary tasks (local files, telemetry, DOM parsing, simple actions) stay LOCAL.
-    // Cloud escalation occurs ONLY when task requires complex cognitive reasoning and cloud is available.
+    // Complex cognitive tasks escalate to cloud when available; ordinary tasks stay local
     if (policy === 'balanced') {
-      // 1. If task requires complex cognitive reasoning and cloud keys are available, escalate
       if (classification.isComplexReasoning && availability.hasCloud) {
         return this.selectCloudProvider(
           availability,
@@ -313,10 +311,9 @@ class HybridRouter {
         );
       }
 
-      // 2. Ordinary tasks (local inspection, reading/writing files, basic commands, DOM distill, screenshots) stay LOCAL
       if (effectiveConfig.preferLocalOllama) {
         return {
-          provider: new OllamaProvider(availability.ollama.baseUrl, availability.ollama.model),
+          provider: availability.ollama.instance || new OllamaProvider(availability.ollama.baseUrl, availability.ollama.model),
           activeProviderName: 'ollama',
           requestedProvider: 'hybrid',
           policy: 'balanced',

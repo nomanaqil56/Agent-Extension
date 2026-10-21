@@ -1,9 +1,10 @@
-// Antigravity Local Agent Engine - Built-in Autonomous Agent Engine (Zero-Config Offline Fallback)
-// Automatically plans and executes multi-step tasks across browser and desktop without needing an external API key
+// Antigravity Local Agent Engine - Deterministic Diagnostic Helper (Offline Zero-Config Utility)
+// Provides basic scripted diagnostic inspection when no AI model or external API key is configured.
+// NOTE: This helper is NOT a general-purpose LLM and does not perform autonomous reasoning.
 
 class FallbackAgentProvider {
   constructor(toolRegistry) {
-    this.name = 'autonomous';
+    this.name = 'deterministic-helper';
     this.model = 'deterministic-rules';
     this.isLocal = true;
     this.isRemote = false;
@@ -16,8 +17,8 @@ class FallbackAgentProvider {
   async checkHealth() {
     return {
       healthy: true,
-      provider: 'autonomous',
-      engine: 'deterministic-offline',
+      provider: 'deterministic-helper',
+      engine: 'deterministic-diagnostic-helper',
       toolsCount: this.toolRegistry?.tools?.size || 0
     };
   }
@@ -163,6 +164,8 @@ class FallbackAgentProvider {
         summary += `Result: \`${JSON.stringify(step.result).slice(0, 300)}\`\n\n`;
       }
     });
+
+    summary += `\n*(Executed via offline deterministic helper. For full adaptive autonomous reasoning and dynamic tool calling, configure an AI model in Settings.)*`;
 
     return summary;
   }

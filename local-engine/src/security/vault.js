@@ -16,6 +16,7 @@ class CredentialVault {
     this.dpapiAvailable = false;
     this.encryptionKey = null;
 
+    this.vaultKeyPath = process.env.ENGINE_VAULT_KEY_PATH || `${this.vaultPath}.key`;
     this.initSecurity();
     this.loadVault();
     this.migrateLegacySecrets();
@@ -37,16 +38,29 @@ class CredentialVault {
       }
     }
 
-    // Hardware & User-isolated machine entropy key for AES-256-GCM fallback
-    const machineEntropy = [
-      process.env.USER || process.env.USERNAME || 'antigravity_user',
-      process.arch,
-      process.platform,
-      process.env.COMPUTERNAME || process.env.HOSTNAME || 'localhost',
-      'antigravity_agent_vault_v1'
-    ].join(':');
-
-    this.encryptionKey = crypto.scryptSync(machineEntropy, 'antigravity_salt_9921', 32);
+    // High-entropy 256-bit key for AES-256-GCM fallback (Section 7.2)
+    // ALWAYS initialized so that AES-256-GCM fallback is 100% resilient
+    if (process.env.ENGINE_VAULT_KEY) {
+      this.encryptionKey = crypto.createHash('sha256').update(process.env.ENGINE_VAULT_KEY).digest();
+    } else if (fs.existsSync(this.vaultKeyPath)) {
+      try {
+        const rawKey = fs.readFileSync(this.vaultKeyPath);
+        if (rawKey.length === 32) {
+          this.encryptionKey = rawKey;
+        } else {
+          this.encryptionKey = crypto.createHash('sha256').update(rawKey).digest();
+        }
+      } catch (e) {
+        this.encryptionKey = crypto.randomBytes(32);
+      }
+    } else {
+      this.encryptionKey = crypto.randomBytes(32);
+      try {
+        const dir = path.dirname(this.vaultKeyPath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(this.vaultKeyPath, this.encryptionKey, { mode: 0o600 });
+      } catch (e) {}
+    }
   }
 
   // Windows DPAPI ProtectedData.Protect using PowerShell
@@ -128,13 +142,36 @@ $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [S
     }
 
     if (record.method === 'aes-256-gcm') {
-      const iv = Buffer.from(record.iv, 'base64');
-      const tag = Buffer.from(record.tag, 'base64');
-      const decipher = crypto.createDecipheriv('aes-256-gcm', this.encryptionKey, iv);
-      decipher.setAuthTag(tag);
-      let decrypted = decipher.update(record.data, 'base64', 'utf8');
-      decrypted += decipher.final('utf8');
-      return decrypted;
+      try {
+        const iv = Buffer.from(record.iv, 'base64');
+        const tag = Buffer.from(record.tag, 'base64');
+        const decipher = crypto.createDecipheriv('aes-256-gcm', this.encryptionKey, iv);
+        decipher.setAuthTag(tag);
+        let decrypted = decipher.update(record.data, 'base64', 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+      } catch (gcmErr) {
+        // Attempt backward-compatible migration decrypt if previously encrypted before vault key generation
+        try {
+          const machineEntropy = [
+            process.env.USER || process.env.USERNAME || 'antigravity_user',
+            process.arch,
+            process.platform,
+            process.env.COMPUTERNAME || process.env.HOSTNAME || 'localhost',
+            'antigravity_agent_vault_v1'
+          ].join(':');
+          const legacyKey = crypto.scryptSync(machineEntropy, 'antigravity_salt_9921', 32);
+          const iv = Buffer.from(record.iv, 'base64');
+          const tag = Buffer.from(record.tag, 'base64');
+          const decipher = crypto.createDecipheriv('aes-256-gcm', legacyKey, iv);
+          decipher.setAuthTag(tag);
+          let decrypted = decipher.update(record.data, 'base64', 'utf8');
+          decrypted += decipher.final('utf8');
+          return decrypted;
+        } catch (legacyErr) {
+          throw new Error(`Decryption failed: ${gcmErr.message}`);
+        }
+      }
     }
 
     throw new Error(`Unsupported encryption method: ${record.method}`);
@@ -170,7 +207,11 @@ $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [S
   getSecret(id) {
     const record = this.credentials.get(id);
     if (!record) return null;
-    return this.decryptValue(record.encrypted);
+    try {
+      return this.decryptValue(record.encrypted);
+    } catch (e) {
+      return null;
+    }
   }
 
   // Check if credential exists
@@ -280,13 +321,27 @@ $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [S
     }
   }
 
-  // Migrate any existing unencrypted .secrets.json entries into vault
+  // Helper: Retrieve system auth token
+  getAuthToken() {
+    return this.getSecret('auth_token') || null;
+  }
+
+  // Helper: Store system auth token
+  setAuthToken(token) {
+    if (!token) return false;
+    return this.storeSecret('auth_token', token, {
+      category: 'system_token',
+      provider: 'system'
+    });
+  }
+
+  // Migrate any existing unencrypted .secrets.json entries into vault (Section 7.3)
   migrateLegacySecrets() {
     try {
       if (!fs.existsSync(this.legacySecretsPath)) return;
       const raw = fs.readFileSync(this.legacySecretsPath, 'utf8');
       const legacy = JSON.parse(raw);
-      let migrated = false;
+      let migratedCount = 0;
 
       const mapping = {
         geminiApiKey: { id: 'gemini', provider: 'gemini', category: 'provider_key' },
@@ -295,18 +350,42 @@ $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [S
         authToken: { id: 'auth_token', provider: 'system', category: 'system_token' }
       };
 
-      for (const [key, info] of Object.entries(mapping)) {
-        if (legacy[key] && !this.hasSecret(info.id)) {
-          this.storeSecret(info.id, legacy[key], info);
-          migrated = true;
+      const keysToMigrate = Object.entries(mapping).filter(([key]) => Boolean(legacy[key]));
+      if (keysToMigrate.length === 0) {
+        // Nothing to migrate; safely remove empty or invalid legacy file
+        try { fs.unlinkSync(this.legacySecretsPath); } catch (e) {}
+        return;
+      }
+
+      let allVerified = true;
+
+      for (const [key, info] of keysToMigrate) {
+        const secretVal = legacy[key];
+        if (!this.hasSecret(info.id)) {
+          this.storeSecret(info.id, secretVal, info);
+        }
+
+        // Verify retrieval without logging the secret
+        const retrieved = this.getSecret(info.id);
+        if (retrieved === secretVal) {
+          migratedCount++;
+        } else {
+          allVerified = false;
         }
       }
 
-      if (migrated) {
-        console.log('[CredentialVault] Migrated legacy secrets to encrypted Credential Vault.');
+      // Safely retire the plaintext legacy secrets file ONLY when all credentials are verified
+      if (allVerified && migratedCount > 0) {
+        try {
+          fs.unlinkSync(this.legacySecretsPath);
+          console.log('[CredentialVault] Successfully migrated and verified all legacy secrets. Plaintext .secrets.json retired.');
+        } catch (unlinkErr) {
+          console.warn('[CredentialVault] Legacy secrets migrated but could not remove plaintext file:', unlinkErr.message);
+        }
       }
     } catch (e) {
-      // Non-fatal legacy migration
+      // Non-fatal legacy migration failure: do NOT delete legacy file if parsing or migration fails
+      console.warn('[CredentialVault] Migration notice:', e.message);
     }
   }
 }

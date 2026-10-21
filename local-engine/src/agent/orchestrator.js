@@ -263,7 +263,7 @@ class AgentOrchestrator {
     taskState.status = 'executing';
     notify({
       type: 'AGENT_THOUGHT',
-      thought: 'Autonomous Engine: Analyzing browser context, active DOM, and local environment to formulate task plan.'
+      thought: 'Deterministic Diagnostic Helper: Executing scripted inspection (no AI model configured).'
     });
 
     const planSteps = await provider.planTask(task, context);
