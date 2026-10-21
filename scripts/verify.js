@@ -46,6 +46,7 @@ function manual(title, instruction) {
 console.log('\n[1] Project Structure & Manifest V3 Configuration:');
 const manifestPath = path.join(root, 'extension', 'manifest.json');
 check('Extension Manifest exists', fs.existsSync(manifestPath));
+check('Authoritative Agent.md exists', fs.existsSync(path.join(root, 'Agent.md')));
 
 if (fs.existsSync(manifestPath)) {
   try {
@@ -75,6 +76,7 @@ check('.gitignore exists', fs.existsSync(gitignorePath));
 if (fs.existsSync(gitignorePath)) {
   const gitignore = fs.readFileSync(gitignorePath, 'utf8');
   check('.gitignore ignores .secrets.json', gitignore.includes('.secrets.json'));
+  check('.gitignore ignores .vault.enc', gitignore.includes('.vault.enc'));
   check('.gitignore ignores .env', gitignore.includes('.env'));
 }
 
@@ -97,12 +99,16 @@ const filesToCompile = [
   'local-engine/src/security/audit.js',
   'local-engine/src/security/emergency.js',
   'local-engine/src/security/privacy.js',
+  'local-engine/src/security/vault.js',
+  'local-engine/src/security/broker.js',
   'local-engine/src/tools/index.js',
   'local-engine/src/tools/desktop.js',
   'local-engine/src/tools/files.js',
   'local-engine/src/tools/terminal.js',
   'local-engine/src/tools/browser.js',
   'local-engine/src/agent/orchestrator.js',
+  'local-engine/src/agent/instructions.js',
+  'local-engine/src/agent/models.js',
   'local-engine/src/agent/providers/router.js',
   'local-engine/src/agent/providers/gemini.js',
   'local-engine/src/agent/providers/anthropic.js',
@@ -115,7 +121,8 @@ const filesToCompile = [
   'scripts/setup.js',
   'local-engine/tests/test-engine.js',
   'local-engine/tests/test-e2e.js',
-  'local-engine/tests/test-privacy.js'
+  'local-engine/tests/test-privacy.js',
+  'local-engine/tests/test-autonomous-agent.js'
 ];
 
 filesToCompile.forEach(relPath => {

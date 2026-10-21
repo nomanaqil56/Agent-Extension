@@ -260,6 +260,58 @@ class FilesTool {
     fs.unlinkSync(resolved);
     return { deleted: true, filePath: resolved };
   }
+
+  // Create directory (Section 13)
+  async createDirectory(params = {}) {
+    const rawPath = params.dirPath || params.directory || params.path;
+    if (!rawPath) throw new Error('Directory path is required');
+    const resolved = path.resolve(rawPath);
+    if (!this.permissionManager.isPathApproved(resolved)) {
+      throw new Error(`Create directory path "${resolved}" is outside approved directories.`);
+    }
+    fs.mkdirSync(resolved, { recursive: true });
+    return { created: true, dirPath: resolved };
+  }
+
+  // Copy file within approved directories
+  async copyFile(params = {}) {
+    const src = this.permissionManager.normalizeFilePath({ path: params.source || params.src || params.filePath });
+    const dst = this.permissionManager.normalizeFilePath({ path: params.destination || params.dest || params.targetPath });
+    if (!src || !dst) throw new Error('Both source and destination paths are required for copy_file');
+
+    const resSrc = path.resolve(src);
+    const resDst = path.resolve(dst);
+    if (!this.permissionManager.isPathApproved(resSrc) || !this.permissionManager.isPathApproved(resDst)) {
+      throw new Error('Source or destination path is outside approved workspace directories.');
+    }
+    if (!fs.existsSync(resSrc)) throw new Error(`Source file does not exist: "${resSrc}"`);
+
+    const dstDir = path.dirname(resDst);
+    if (!fs.existsSync(dstDir)) fs.mkdirSync(dstDir, { recursive: true });
+
+    fs.copyFileSync(resSrc, resDst);
+    return { copied: true, source: resSrc, destination: resDst };
+  }
+
+  // Move or rename file within approved directories
+  async moveFile(params = {}) {
+    const src = this.permissionManager.normalizeFilePath({ path: params.source || params.src || params.filePath });
+    const dst = this.permissionManager.normalizeFilePath({ path: params.destination || params.dest || params.targetPath });
+    if (!src || !dst) throw new Error('Both source and destination paths are required for move_file');
+
+    const resSrc = path.resolve(src);
+    const resDst = path.resolve(dst);
+    if (!this.permissionManager.isPathApproved(resSrc) || !this.permissionManager.isPathApproved(resDst)) {
+      throw new Error('Source or destination path is outside approved workspace directories.');
+    }
+    if (!fs.existsSync(resSrc)) throw new Error(`Source file does not exist: "${resSrc}"`);
+
+    const dstDir = path.dirname(resDst);
+    if (!fs.existsSync(dstDir)) fs.mkdirSync(dstDir, { recursive: true });
+
+    fs.renameSync(resSrc, resDst);
+    return { moved: true, source: resSrc, destination: resDst };
+  }
 }
 
 module.exports = FilesTool;

@@ -6,11 +6,12 @@ const DesktopTool = require('./desktop');
 const BrowserTool = require('./browser');
 
 class ToolRegistry {
-  constructor(permissionManager, auditLogger, emergencyCoordinator, serverContext) {
+  constructor(permissionManager, auditLogger, emergencyCoordinator, serverContext, credentialBroker = null) {
     this.permissionManager = permissionManager;
     this.auditLogger = auditLogger;
     this.emergencyCoordinator = emergencyCoordinator;
     this.serverContext = serverContext;
+    this.credentialBroker = credentialBroker;
 
     this.filesTool = new FilesTool(permissionManager);
     this.terminalTool = new TerminalTool(permissionManager, emergencyCoordinator);
@@ -18,6 +19,10 @@ class ToolRegistry {
     this.browserTool = new BrowserTool(serverContext);
 
     this.registerAllTools();
+  }
+
+  setCredentialBroker(broker) {
+    this.credentialBroker = broker;
   }
 
   registerAllTools() {
@@ -87,6 +92,32 @@ class ToolRegistry {
       },
       required: ['filePath']
     }, (p) => this.filesTool.deleteFile(p));
+
+    this.addTool('create_directory', 'Create a directory inside an approved directory path', {
+      type: 'object',
+      properties: {
+        dirPath: { type: 'string', description: 'Directory path to create' }
+      },
+      required: ['dirPath']
+    }, (p) => this.filesTool.createDirectory(p));
+
+    this.addTool('copy_file', 'Copy a file within approved workspace directories', {
+      type: 'object',
+      properties: {
+        source: { type: 'string', description: 'Source file path' },
+        destination: { type: 'string', description: 'Destination file path' }
+      },
+      required: ['source', 'destination']
+    }, (p) => this.filesTool.copyFile(p));
+
+    this.addTool('move_file', 'Move or rename a file within approved workspace directories', {
+      type: 'object',
+      properties: {
+        source: { type: 'string', description: 'Source file path' },
+        destination: { type: 'string', description: 'Destination file path' }
+      },
+      required: ['source', 'destination']
+    }, (p) => this.filesTool.moveFile(p));
 
     // 2. Terminal & Developer Tools
     this.addTool('execute_command', 'Execute a command in PowerShell/Terminal within an approved directory', {
@@ -208,6 +239,36 @@ class ToolRegistry {
       type: 'object',
       properties: {}
     }, () => this.browserTool.captureScreenshot());
+
+    // 5. Credential Broker Tools (Section 10 - Zero Raw Passwords to Model)
+    this.addTool('list_available_credentials', 'List available stored credential IDs and associated domains (metadata only, no secrets)', {
+      type: 'object',
+      properties: {}
+    }, () => {
+      if (!this.credentialBroker) return [];
+      return this.credentialBroker.listAvailableCredentials();
+    });
+
+    this.addTool('broker_authenticate', 'Authenticate to a supported website or service using an authorized stored credential without exposing secrets', {
+      type: 'object',
+      properties: {
+        credentialId: { type: 'string', description: 'Opaque identifier of stored credential' },
+        targetDomain: { type: 'string', description: 'Domain being authenticated' },
+        operation: { type: 'string', description: 'Authentication operation description' }
+      },
+      required: ['credentialId', 'targetDomain']
+    }, (p, abortSignal, onApprovalNeeded) => {
+      if (!this.credentialBroker) {
+        throw new Error('Credential Broker is not initialized.');
+      }
+      return this.credentialBroker.brokerAuthentication({
+        credentialId: p.credentialId,
+        targetDomain: p.targetDomain,
+        operation: p.operation || 'web_login',
+        onApprovalNeeded,
+        abortSignal
+      });
+    });
   }
 
   addTool(name, description, parameters, handler) {
@@ -312,7 +373,7 @@ class ToolRegistry {
     });
 
     try {
-      const result = await tool.handler(params, abortSignal);
+      const result = await tool.handler(params, abortSignal, onApprovalNeeded);
       const durationMs = Date.now() - startTime;
 
       this.auditLogger.log({

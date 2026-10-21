@@ -7,8 +7,9 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node tests/test-engine.js",
+    "test": "node tests/test-engine.js && node tests/test-autonomous-agent.js",
     "test:engine": "node tests/test-engine.js",
+    "test:autonomous": "node tests/test-autonomous-agent.js",
     "test:privacy": "node tests/test-privacy.js",
     "test:e2e": "node tests/test-e2e.js"
   },

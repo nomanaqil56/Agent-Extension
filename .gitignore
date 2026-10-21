@@ -9,6 +9,9 @@ package-lock.json
 .secrets.json
 *.secrets.json
 local-engine/.secrets.json
+.vault.enc
+*.vault.enc
+local-engine/.vault.enc
 
 # Logs and audit data
 logs/

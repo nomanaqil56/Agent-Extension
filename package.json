@@ -7,6 +7,7 @@
     "start:engine": "npm --prefix local-engine start",
     "dev:engine": "npm --prefix local-engine run dev",
     "test:engine": "npm --prefix local-engine test",
+    "test:autonomous": "npm --prefix local-engine run test:autonomous",
     "test:privacy": "npm --prefix local-engine run test:privacy",
     "test:e2e": "npm --prefix local-engine run test:e2e",
     "verify": "node scripts/verify.js"

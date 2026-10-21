@@ -3,325 +3,534 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Antigravity Browser Agent</title>
+  <title>Agent</title>
   <link rel="stylesheet" href="sidepanel.css">
 </head>
-<body class="agy-theme-dark">
-  <div class="agy-container">
-    <!-- Top Header Bar -->
-    <header class="agy-header">
-      <div class="agy-brand">
-        <div class="agy-logo-orb">
-          <div class="agy-orb-inner"></div>
-        </div>
-        <div class="agy-title-group">
-          <h1 class="agy-title">ANTIGRAVITY</h1>
-          <span class="agy-version-badge">AGENT 2.0</span>
+<body class="agy-ide-body">
+  <div class="agy-ide-shell">
+
+    <!-- 1. Antigravity IDE Agent Header -->
+    <header class="agy-topbar">
+      <!-- Left: Title & Switcher -->
+      <div class="agy-topbar-left">
+        <div class="agy-title-container">
+          <span class="agy-topbar-title-text" id="header-title-text">Agent</span>
+          <select id="conversation-select" class="agy-convo-select" title="Switch Conversation"></select>
+          <svg class="agy-title-chevron" width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M7.247 11.14 2.451 5.658C1.885 5.013 2.345 4 3.204 4h9.592a1 1 0 0 1 .753 1.659l-4.796 5.48a1 1 0 0 1-1.506 0z"/>
+          </svg>
         </div>
       </div>
 
-      <div class="agy-status-group">
-        <!-- Engine Connection Pill -->
-        <button id="engine-status-pill" class="agy-status-pill disconnected" title="Click to reconnect to Local Agent Engine">
-          <span class="agy-status-dot"></span>
-          <span id="engine-status-text">OFFLINE</span>
+      <!-- Right: Action Icons (+, History, ..., Close) -->
+      <div class="agy-topbar-right">
+        <!-- New Conversation Button (+) -->
+        <button id="btn-new-chat" class="agy-action-icon-btn" title="New Conversation (Ctrl+L)" aria-label="New Conversation">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5a.75.75 0 0 1-1.5 0v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5A.75.75 0 0 1 8 2z"/>
+          </svg>
         </button>
 
-        <!-- Emergency Stop Button -->
-        <button id="emergency-stop-btn" class="agy-stop-btn" title="Emergency Stop: Halt all running actions immediately">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
-            <rect x="5" y="5" width="14" height="14" rx="2"></rect>
+        <!-- Conversation History Button (Clock) -->
+        <button id="btn-toggle-history" class="agy-action-icon-btn" title="Conversation History" aria-label="Conversation History">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8.515 1.019A7 7 0 0 0 8 1a7 7 0 1 0 6.8 5.39.75.75 0 0 0-1.46-.356A5.5 5.5 0 1 1 8 2.5c.29 0 .57.023.84.07L7.53 3.88a.75.75 0 0 0 1.06 1.06l2.5-2.5a.75.75 0 0 0 0-1.06l-2.5-2.5a.75.75 0 1 0-1.06 1.06l.985.989zM8 4a.75.75 0 0 1 .75.75v3.5h2.5a.75.75 0 0 1 0 1.5h-3.25a.75.75 0 0 1-.75-.75v-4.25A.75.75 0 0 1 8 4z"/>
           </svg>
+        </button>
+
+        <!-- More Menu Button (...) -->
+        <div class="agy-menu-wrapper">
+          <button id="btn-toggle-more-menu" class="agy-action-icon-btn" title="More Options" aria-label="More Options">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M3 9.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z"/>
+            </svg>
+            <span id="more-menu-badge" class="agy-menu-notification-dot" style="display:none;"></span>
+          </button>
+
+          <!-- Dropdown Popup for More Menu -->
+          <div id="more-menu-dropdown" class="agy-dropdown-menu" style="display:none;">
+            <button class="agy-dropdown-item" id="menu-item-approvals">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0L2 2.5v5c0 4.2 2.6 8.1 6 9.5 3.4-1.4 6-5.3 6-9.5v-5L8 0z"/></svg>
+              <span>Security Approvals</span>
+              <span id="approvals-count-badge" class="agy-badge-pill" style="display:none;">0</span>
+            </button>
+            <button class="agy-dropdown-item" id="menu-item-audit">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.5A1.5 1.5 0 0 1 2.5 1h11A1.5 1.5 0 0 1 15 2.5v11a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 13.5v-11z"/></svg>
+              <span>Audit Log</span>
+            </button>
+            <button class="agy-dropdown-item" id="menu-item-settings">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M9.1 4.4L8.6 2H7.4l-.5 2.4-.7.3-2-1.3-.9.8 1.3 2-.2.7-2.5.5v1.2l2.5.5.3.8-1.4 2 .8.8 2.1-1.3.7.3.5 2.4h1.2l.5-2.4.7-.3 2 1.3.8-.8-1.3-2 .3-.7 2.4-.5V7.4l-2.4-.5-.3-.7 1.3-2-.8-.8-2 1.3-.7-.3zM8 10a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></svg>
+              <span>Settings & AI Models</span>
+            </button>
+            <div class="agy-dropdown-divider"></div>
+            <button class="agy-dropdown-item" id="menu-item-clear">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2.5 1a1 1 0 0 0-1 1v1a1 1 0 0 0 1 1H3v9a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V4h.5a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H10a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1H2.5z"/></svg>
+              <span>Clear Conversation</span>
+            </button>
+            <div class="agy-dropdown-divider"></div>
+            <div class="agy-dropdown-status-row">
+              <span class="agy-status-dot-sm" id="engine-status-dot"></span>
+              <span id="engine-status-text" class="agy-status-text">OFFLINE</span>
+              <button id="engine-status-pill" class="agy-reconnect-link">Reconnect</button>
+            </div>
+            <div class="agy-dropdown-divider"></div>
+            <button class="agy-dropdown-item agy-danger-item" id="menu-item-emergency-stop">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="2" width="12" height="12" rx="2"/></svg>
+              <span>Emergency Stop</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Close / Reset Button (X) -->
+        <button id="btn-panel-close" class="agy-action-icon-btn" title="Reset Session" aria-label="Reset">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M2.146 2.854a.5.5 0 1 1 .708-.708L8 7.293l5.146-5.147a.5.5 0 0 1 .708.708L8.707 8l5.147 5.146a.5.5 0 0 1-.708.708L8 8.707l-5.146 5.147a.5.5 0 0 1-.708-.708L7.293 8 2.146 2.854Z"/>
+          </svg>
+        </button>
+
+        <!-- Emergency Stop Button in Header (shown when active) -->
+        <button id="emergency-stop-btn" class="agy-emergency-stop-pill" title="Emergency Stop" style="display:none;">
+          <span class="agy-stop-dot"></span>
           STOP
         </button>
       </div>
     </header>
 
-    <!-- Context & Active Model Bar -->
-    <div class="agy-subbar">
-      <div class="agy-page-context" id="page-context-badge" title="Current Page Context">
-        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"></circle>
-          <line x1="2" y1="12" x2="22" y2="12"></line>
-          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
-        </svg>
-        <span id="page-title-text" class="agy-truncate">Active Tab</span>
+    <!-- 2. Main Conversation Canvas -->
+    <main class="agy-main-canvas is-empty-state" id="main-canvas">
+
+      <!-- Conversation Messages Stream (active during conversation) -->
+      <div id="chat-messages" class="agy-chat-stream"></div>
+
+      <!-- Live Agent Progress Shimmer Toast -->
+      <div id="agent-active-status" class="agy-live-toast" style="display:none;">
+        <div class="agy-live-shimmer-bar"></div>
+        <div class="agy-live-toast-inner">
+          <div class="agy-spinner"></div>
+          <span id="agent-status-label" class="agy-live-toast-label">Planning next step...</span>
+          <button id="inline-stop-btn" class="agy-toast-stop-btn">Cancel</button>
+        </div>
       </div>
 
-      <div class="agy-provider-selector">
-        <select id="model-select" class="agy-select">
-          <option value="hybrid" selected>Hybrid AI (Auto Routing)</option>
-          <option value="gemini">Gemini 2.0 Flash</option>
-          <option value="claude">Claude 3.5 Sonnet</option>
-          <option value="openai">GPT-4o</option>
-          <option value="ollama">Ollama (Local LLM)</option>
-          <option value="fallback">Autonomous Engine</option>
-        </select>
+      <!-- Status & Artifacts Toolbar (Above Composer - As in agent_panel_toolbar.png) -->
+      <div id="above-composer-bar" class="agy-above-composer-bar" style="display:none;">
+        <div class="agy-above-left">
+          <span class="agy-files-label">Files Edited</span>
+          <div id="above-file-chips" class="agy-chips-strip"></div>
+        </div>
+        <div class="agy-above-right">
+          <button id="btn-review-changes" class="agy-review-changes-btn" title="Review Changes">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M2 3h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zm1 2v6h10V5H3z"/>
+            </svg>
+            Review Changes
+          </button>
+        </div>
+      </div>
+
+      <!-- 3. Message Composer & Empty State Layout (Exact match to Google Antigravity IDE) -->
+      <div class="agy-composer-dock" id="composer-dock">
+
+        <!-- Initial State Workspace Title (Exact match to editor_agent_panel.png) -->
+        <div class="agy-workspace-title-box" id="welcome-card">
+          <h1 class="agy-workspace-title" id="workspace-title-display">persimmon_website</h1>
+        </div>
+
+        <!-- Autocomplete Popovers -->
+        <!-- Slash Command Popover (/plan, /goal, /schedule, /grill-me, /learn) -->
+        <div id="slash-command-menu" class="agy-autocomplete-popover" style="display:none;">
+          <div class="agy-popover-header">Commands</div>
+        <!-- The Composer Card -->
+        <div class="agy-composer-card" id="composer-card">
+
+          <!-- Autocomplete Popovers -->
+          <!-- Slash Command Popover (/plan, /goal, /schedule, /grill-me, /learn) -->
+          <div id="slash-command-menu" class="agy-autocomplete-popover" style="display:none;">
+            <div class="agy-popover-header">Commands</div>
+            <div class="agy-popover-item active" data-command="/plan">
+              <span class="agy-cmd-tag">/plan</span>
+              <span class="agy-cmd-desc">Plan step-by-step before making edits</span>
+            </div>
+            <div class="agy-popover-item" data-command="/goal">
+              <span class="agy-cmd-tag">/goal</span>
+              <span class="agy-cmd-desc">Autonomous thorough execution until verified</span>
+            </div>
+            <div class="agy-popover-item" data-command="/schedule">
+              <span class="agy-cmd-tag">/schedule</span>
+              <span class="agy-cmd-desc">Schedule a recurring task or one-shot timer</span>
+            </div>
+            <div class="agy-popover-item" data-command="/grill-me">
+              <span class="agy-cmd-tag">/grill-me</span>
+              <span class="agy-cmd-desc">Interactive interview to resolve design decisions</span>
+            </div>
+            <div class="agy-popover-item" data-command="/learn">
+              <span class="agy-cmd-tag">/learn</span>
+              <span class="agy-cmd-desc">Save guidelines and preferences into agent memory</span>
+            </div>
+          </div>
+
+          <!-- At-Mention Popover (@page, @dom, @screenshot, @terminal, @files) -->
+          <div id="at-mention-menu" class="agy-autocomplete-popover" style="display:none;">
+            <div class="agy-popover-header">Context Mentions</div>
+            <div class="agy-popover-item active" data-mention="@page">
+              <span class="agy-cmd-tag">@page</span>
+              <span class="agy-cmd-desc">Active webpage title, URL & content</span>
+            </div>
+            <div class="agy-popover-item" data-mention="@dom">
+              <span class="agy-cmd-tag">@dom</span>
+              <span class="agy-cmd-desc">Interactive DOM elements tree</span>
+            </div>
+            <div class="agy-popover-item" data-mention="@screenshot">
+              <span class="agy-cmd-tag">@screenshot</span>
+              <span class="agy-cmd-desc">Capture visible viewport screenshot</span>
+            </div>
+            <div class="agy-popover-item" data-mention="@terminal">
+              <span class="agy-cmd-tag">@terminal</span>
+              <span class="agy-cmd-desc">Local engine terminal execution</span>
+            </div>
+            <div class="agy-popover-item" data-mention="@files">
+              <span class="agy-cmd-tag">@files</span>
+              <span class="agy-cmd-desc">Approved workspace local files</span>
+            </div>
+          </div>
+
+          <!-- Add Context Menu Popover (from + button) -->
+          <div id="add-context-menu" class="agy-context-popover" style="display:none;">
+            <div class="agy-context-popover-title">Add Context</div>
+            <button class="agy-context-menu-item" id="ctx-item-page">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/>
+                <line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="1.5"/>
+              </svg>
+              <span>Current Tab Content</span>
+              <span class="agy-context-key">@page</span>
+            </button>
+            <button class="agy-context-menu-item" id="ctx-item-dom">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M4 2a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H4zm0 1h8a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/>
+              </svg>
+              <span>Interactive DOM Tree</span>
+              <span class="agy-context-key">@dom</span>
+            </button>
+            <button class="agy-context-menu-item" id="ctx-item-screenshot">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M10.5 8.5a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z"/>
+                <path d="M2 4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-1.172a2 2 0 0 1-1.414-.586l-.828-.828A2 2 0 0 0 9.172 2H6.828a2 2 0 0 0-1.414.586l-.828.828A2 2 0 0 1 3.172 4H2zm.5 2a.5.5 0 1 1 0-1 .5.5 0 0 1 0 1zM8 12a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/>
+              </svg>
+              <span>Screen Recording / Screenshot</span>
+              <span class="agy-context-key">@screenshot</span>
+            </button>
+          </div>
+
+          <!-- Mode Dropdown Popover (Planning, Normal, Fast) -->
+          <div id="mode-dropdown-menu" class="agy-mode-popover" style="display:none;">
+            <div class="agy-mode-menu-item active" data-mode="Planning">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" class="agy-check-icon"><path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/></svg>
+              <div class="agy-mode-info">
+                <strong>Planning</strong>
+                <span>Generates structured execution plan before making edits</span>
+              </div>
+            </div>
+            <div class="agy-mode-menu-item" data-mode="Normal">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" class="agy-check-icon" style="visibility:hidden;"><path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/></svg>
+              <div class="agy-mode-info">
+                <strong>Normal</strong>
+                <span>Interactive pair programming and execution</span>
+              </div>
+            </div>
+            <div class="agy-mode-menu-item" data-mode="Fast">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" class="agy-check-icon" style="visibility:hidden;"><path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/></svg>
+              <div class="agy-mode-info">
+                <strong>Fast</strong>
+                <span>Quick autonomous execution with minimal reasoning steps</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Attached Context Tags Row (Inside top of composer, hidden when clean) -->
+          <div class="agy-composer-attachments" id="composer-attachments-row" style="display:none;">
+            <!-- Hidden inputs to maintain 100% JS contract compatibility -->
+            <input type="checkbox" id="check-include-page" checked style="display:none;">
+            <input type="checkbox" id="check-include-dom" checked style="display:none;">
+
+            <span class="agy-tag-pill active" id="chip-include-page" title="Active Tab Context">
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/><line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="1.5"/></svg>
+              <span id="page-title-text" class="agy-truncate-pill">Current Tab</span>
+            </span>
+
+            <span class="agy-tag-pill active" id="chip-include-dom" title="Interactive DOM Context">
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H4zm0 1h8a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/></svg>
+              <span>DOM</span>
+            </span>
+
+            <button class="agy-tag-pill-btn" id="btn-snap-screenshot" title="Capture Tab Screenshot">
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M10.5 8.5a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z"/><path d="M2 4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-1.172a2 2 0 0 1-1.414-.586l-.828-.828A2 2 0 0 0 9.172 2H6.828a2 2 0 0 0-1.414.586l-.828.828A2 2 0 0 1 3.172 4H2zm.5 2a.5.5 0 1 1 0-1 .5.5 0 0 1 0 1zM8 12a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/></svg>
+              <span>Screenshot</span>
+            </button>
+
+            <!-- Screenshot Thumbnail Tag -->
+            <div id="screenshot-preview-tag" class="agy-screenshot-thumb-tag" style="display:none;">
+              <img id="screenshot-thumb-img" alt="Captured Tab">
+              <span>Attached</span>
+              <button id="btn-remove-screenshot" class="agy-remove-thumb-btn" title="Remove">&times;</button>
+            </div>
+          </div>
+
+          <!-- Main Textarea Input -->
+          <div class="agy-composer-input-row">
+            <textarea id="user-input" class="agy-composer-textarea" rows="2" placeholder="Ask anything (Ctrl+L), @ to mention, / for workflows"></textarea>
+          </div>
+
+          <!-- Composer Bottom Controls (Exact match to Antigravity IDE) -->
+          <div class="agy-composer-toolbar">
+            <!-- Left Controls: Plus Button, Mode Selector, Model Selector -->
+            <div class="agy-toolbar-left">
+              <!-- Add Context Button (+) -->
+              <button id="btn-composer-add-context" class="agy-toolbar-icon-btn" title="Add Context" aria-label="Add Context">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5a.75.75 0 0 1-1.5 0v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5A.75.75 0 0 1 8 2z"/>
+                </svg>
+              </button>
+
+              <!-- Agent Mode Selector Pill (Planning / Normal / Fast) -->
+              <div class="agy-mode-pill-btn" id="btn-composer-mode" title="Switch Agent Mode">
+                <svg class="agy-chevron-icon" width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M7.247 11.14 2.451 5.658C1.885 5.013 2.345 4 3.204 4h9.592a1 1 0 0 1 .753 1.659l-4.796 5.48a1 1 0 0 1-1.506 0z"/>
+                </svg>
+                <span id="active-mode-label">Planning</span>
+              </div>
+
+              <!-- Model Selector Pill (Inside composer bottom row!) -->
+              <div class="agy-model-pill-btn" id="btn-composer-model" title="Select Model">
+                <svg class="agy-chevron-icon" width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M7.247 11.14 2.451 5.658C1.885 5.013 2.345 4 3.204 4h9.592a1 1 0 0 1 .753 1.659l-4.796 5.48a1 1 0 0 1-1.506 0z"/>
+                </svg>
+                <span id="active-model-label" class="agy-truncate-model">Gemini 3 Pro Preview</span>
+                <!-- Native select styled seamlessly inside the pill -->
+                <select id="model-select" class="agy-composer-model-select">
+                  <option value="gemini" selected>Gemini 3 Pro Preview</option>
+                  <option value="gemini-pro">Gemini 3.8 Pro</option>
+                  <option value="hybrid">Hybrid Routing</option>
+                  <option value="claude">Claude 3.5 Sonnet</option>
+                  <option value="openai">GPT-4o</option>
+                  <option value="ollama">Local Ollama</option>
+                  <option value="fallback">Autonomous Engine</option>
+                </select>
+              </div>
+
+              <!-- Trigger Mention Button (@) (Hidden in clean mode, kept for JS) -->
+              <button id="btn-trigger-mention" class="agy-toolbar-text-btn" title="Add Context (@)" style="display:none;">@</button>
+            </div>
+
+            <!-- Right Controls: Voice & Circular Send/Stop Button -->
+            <div class="agy-toolbar-right">
+              <!-- Voice Dictation Button (Ctrl+M) -->
+              <button id="voice-btn" class="agy-toolbar-icon-btn voice" title="Voice Input (Ctrl+M)" aria-label="Voice Input">
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M8 12a3 3 0 0 0 3-3V4a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/>
+                  <path d="M13 8a.5.5 0 0 1 .5.5 5.5 5.5 0 0 1-11 0 .5.5 0 0 1 1 0 4.5 4.5 0 1 0 9 0 .5.5 0 0 1 .5-.5z"/>
+                  <path d="M8 13.5v2m-2 0h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                </svg>
+              </button>
+
+              <!-- Voice Waveform Indicator -->
+              <span id="voice-state-hint" class="agy-voice-indicator" style="display:none;">
+                <span class="dot d1"></span>
+                <span class="dot d2"></span>
+                <span class="dot d3"></span>
+              </span>
+
+              <!-- Send / Stop Button (Exact Antigravity IDE 28px Circle) -->
+              <button id="send-btn" class="agy-send-circle-btn" title="Send message (Enter)" aria-label="Send message" disabled>
+                <!-- Arrow forward icon (when idle) -->
+                <svg id="send-btn-icon" class="agy-send-icon" width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                  <path fill-rule="evenodd" d="M1 8a.5.5 0 0 1 .5-.5h11.793l-3.147-3.146a.5.5 0 0 1 .708-.708l4 4a.5.5 0 0 1 0 .708l-4 4a.5.5 0 0 1-.708-.708L13.293 8.5H1.5A.5.5 0 0 1 1 8z"/>
+                </svg>
+                <!-- Stop square (when running) -->
+                <div id="stop-btn-square" class="agy-stop-square" style="display:none;"></div>
+              </button>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Recent Task Row in Empty State (Exact match to editor_agent_panel.png) -->
+        <div class="agy-recent-task-row" id="recent-task-row">
+          <span class="agy-recent-title" id="recent-task-title">Persimmon Website Creation</span>
+          <span class="agy-recent-time" id="recent-task-time">2h</span>
+        </div>
+
+        <!-- Footer Disclaimer (Exact match to editor_agent_panel.png) -->
+        <div class="agy-footer-disclaimer" id="footer-disclaimer">
+          AI may make mistakes. Double-check all generated code.
+        </div>
+
+      </div>
+
+    </main>
+
+    <!-- 4. Slide-Over Drawers (History, Approvals, Audit Log, Settings) -->
+
+    <!-- Backdrop Overlay -->
+    <div id="drawer-backdrop" class="agy-drawer-backdrop" style="display:none;"></div>
+
+    <!-- A. HISTORY DRAWER -->
+    <div id="drawer-history" class="agy-slide-drawer" style="display:none;">
+      <div class="agy-drawer-header">
+        <div class="agy-drawer-title">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8.515 1.019A7 7 0 0 0 8 1a7 7 0 1 0 6.8 5.39.75.75 0 0 0-1.46-.356A5.5 5.5 0 1 1 8 2.5c.29 0 .57.023.84.07L7.53 3.88a.75.75 0 0 0 1.06 1.06l2.5-2.5a.75.75 0 0 0 0-1.06l-2.5-2.5a.75.75 0 1 0-1.06 1.06l.985.989zM8 4a.75.75 0 0 1 .75.75v3.5h2.5a.75.75 0 0 1 0 1.5h-3.25a.75.75 0 0 1-.75-.75v-4.25A.75.75 0 0 1 8 4z"/></svg>
+          <h3>Conversation History</h3>
+        </div>
+        <button class="agy-close-drawer-btn" data-close="drawer-history" aria-label="Close History">&times;</button>
+      </div>
+      <div class="agy-drawer-body">
+        <button id="btn-drawer-new-chat" class="agy-drawer-action-btn">+ New Conversation</button>
+        <div id="drawer-history-list" class="agy-history-list"></div>
       </div>
     </div>
 
-    <!-- Navigation Tabs -->
-    <nav class="agy-nav">
-      <button class="agy-tab active" data-tab="chat-view">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-        </svg>
-        Agent Chat
-      </button>
-
-      <button class="agy-tab" data-tab="approvals-view">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-        </svg>
-        Approvals <span id="approvals-count-badge" class="agy-counter-badge" style="display: none;">0</span>
-      </button>
-
-      <button class="agy-tab" data-tab="audit-view">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
-        </svg>
-        Audit Log
-      </button>
-
-      <button class="agy-tab" data-tab="settings-view">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="3"></circle>
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-        </svg>
-      </button>
-    </nav>
-
-    <!-- Main Content Views -->
-    <main class="agy-main">
-
-      <!-- 1. CHAT VIEW -->
-      <section id="chat-view" class="agy-view active">
-        <!-- Persistent Conversation Controls Bar -->
-        <div class="agy-conversation-bar">
-          <div class="agy-conv-left">
-            <button id="btn-new-chat" class="agy-mini-btn" title="Start a fresh conversation">
-              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="12" y1="5" x2="12" y2="19"></line>
-                <line x1="5" y1="12" x2="19" y2="12"></line>
-              </svg>
-              New Task
-            </button>
-            <select id="conversation-select" class="agy-select-compact" title="Switch conversation"></select>
-          </div>
-          <button id="btn-clear-chat" class="agy-icon-btn-compact" title="Clear current conversation messages">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="3 6 5 6 21 6"></polyline>
-              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-            </svg>
-          </button>
+    <!-- B. APPROVALS DRAWER -->
+    <div id="drawer-approvals" class="agy-slide-drawer" style="display:none;">
+      <div class="agy-drawer-header">
+        <div class="agy-drawer-title">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0L2 2.5v5c0 4.2 2.6 8.1 6 9.5 3.4-1.4 6-5.3 6-9.5v-5L8 0z"/></svg>
+          <h3>Security & Approvals</h3>
         </div>
-
-        <!-- Message Feed -->
-        <div id="chat-messages" class="agy-message-list">
-          <div class="agy-welcome-card" id="welcome-card">
-            <div class="agy-welcome-icon">⚡</div>
-            <h3>Antigravity Command Center</h3>
-            <p>Your browser and desktop agent. Control tabs, navigate web pages, read local code, execute terminal commands, and automate workflows.</p>
-            <div class="agy-suggestion-pills">
-              <button class="agy-pill" data-prompt="Analyze this webpage and summarize its key points">📑 Summarize Page</button>
-              <button class="agy-pill" data-prompt="Distill interactive elements and highlight buttons">🎯 Label Buttons</button>
-              <button class="agy-pill" data-prompt="Inspect local project files and run tests in terminal">💻 Check Project Files</button>
-              <button class="agy-pill" data-prompt="Take a screenshot of the current page">📸 Screenshot</button>
-            </div>
-          </div>
-        </div>
-
-        <!-- Live Agent Execution Indicator -->
-        <div id="agent-active-status" class="agy-agent-status" style="display: none;">
-          <div class="agy-spinner"></div>
-          <span id="agent-status-label">Planning next step...</span>
-        </div>
-
-        <!-- Input Area -->
-        <div class="agy-input-container">
-          <!-- Context attachment chips -->
-          <div class="agy-context-chips">
-            <label class="agy-chip active" id="chip-include-page">
-              <input type="checkbox" id="check-include-page" checked>
-              <span>🌐 Current Page</span>
-            </label>
-            <label class="agy-chip active" id="chip-include-dom">
-              <input type="checkbox" id="check-include-dom" checked>
-              <span>📑 DOM Elements</span>
-            </label>
-            <button class="agy-chip-btn" id="btn-snap-screenshot" title="Attach screenshot of page">
-              📸 Capture Tab
-            </button>
-          </div>
-
-          <div class="agy-input-row">
-            <textarea id="user-input" class="agy-textarea" rows="2" placeholder="Instruct your agent (e.g. 'Click the submit button and check logs')..."></textarea>
-            
-            <div class="agy-input-actions">
-              <!-- Voice Dictation Button -->
-              <button id="voice-btn" class="agy-icon-btn voice" title="Voice Command (Click & Speak)">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
-                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-                  <line x1="12" y1="19" x2="12" y2="23"></line>
-                  <line x1="8" y1="23" x2="16" y2="23"></line>
-                </svg>
-              </button>
-
-              <!-- Send Button -->
-              <button id="send-btn" class="agy-send-btn" title="Send Instruction (Enter)">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-                  <line x1="22" y1="2" x2="11" y2="13"></line>
-                  <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-                </svg>
-              </button>
-            </div>
-          </div>
-          <div class="agy-input-footer">
-            <span class="agy-shortcut-hint"><kbd>Enter</kbd> Send · <kbd>Shift+Enter</kbd> New line</span>
-            <span id="voice-state-hint" class="agy-voice-hint" style="display:none;">Listening...</span>
-          </div>
-        </div>
-      </section>
-
-      <!-- 2. APPROVALS VIEW -->
-      <section id="approvals-view" class="agy-view">
-        <div class="agy-view-header">
-          <h2>Action Approvals & Security</h2>
-          <p>Sensitive actions require your explicit authorization before execution.</p>
-        </div>
-
-        <div id="approvals-list" class="agy-approvals-feed">
-          <div class="agy-empty-state">
-            <div class="agy-shield-icon">🛡️</div>
+        <button class="agy-close-drawer-btn" data-close="drawer-approvals" aria-label="Close Approvals">&times;</button>
+      </div>
+      <div class="agy-drawer-body">
+        <div id="approvals-list" class="agy-drawer-feed">
+          <div class="agy-empty-drawer-state">
+            <div class="agy-empty-icon">🛡️</div>
             <h4>No Pending Approvals</h4>
-            <p>When the agent attempts sensitive file edits or terminal commands, you'll review and approve them here.</p>
+            <p>Sensitive file edits, command execution, or external network requests requiring authorization will appear here.</p>
           </div>
         </div>
-      </section>
+      </div>
+    </div>
 
-      <!-- 3. AUDIT LOG VIEW -->
-      <section id="audit-view" class="agy-view">
-        <div class="agy-view-header">
-          <div class="agy-flex-between">
-            <div>
-              <h2>Audit Log</h2>
-              <p>Chronological trace of all actions executed by the agent.</p>
-            </div>
-            <div class="agy-btn-row">
-              <button id="refresh-audit-btn" class="agy-small-btn">Refresh</button>
-              <button id="clear-audit-btn" class="agy-small-btn">Clear</button>
-            </div>
-          </div>
+    <!-- C. AUDIT LOG DRAWER -->
+    <div id="drawer-audit" class="agy-slide-drawer" style="display:none;">
+      <div class="agy-drawer-header">
+        <div class="agy-drawer-title">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.5A1.5 1.5 0 0 1 2.5 1h11A1.5 1.5 0 0 1 15 2.5v11a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 13.5v-11z"/></svg>
+          <h3>Audit Log</h3>
         </div>
-
-        <div id="audit-list" class="agy-audit-feed">
-          <div class="agy-empty-state">
-            <div class="agy-shield-icon">📜</div>
+        <div style="display:flex; gap:6px;">
+          <button id="refresh-audit-btn" class="agy-mini-btn">Refresh</button>
+          <button id="clear-audit-btn" class="agy-mini-btn">Clear</button>
+          <button class="agy-close-drawer-btn" data-close="drawer-audit" aria-label="Close Audit Log">&times;</button>
+        </div>
+      </div>
+      <div class="agy-drawer-body">
+        <div id="audit-list" class="agy-drawer-feed">
+          <div class="agy-empty-drawer-state">
+            <div class="agy-empty-icon">📜</div>
             <h4>Audit Log is Empty</h4>
-            <p>Every browser automation, terminal execution, and file access event is recorded here.</p>
+            <p>Every tool execution, web navigation, DOM click, and terminal command is permanently recorded.</p>
           </div>
         </div>
-      </section>
+      </div>
+    </div>
 
-      <!-- 4. SETTINGS VIEW -->
-      <section id="settings-view" class="agy-view">
-        <div class="agy-view-header">
-          <h2>Configuration & Permissions</h2>
-          <p>Configure model API keys, local companion engine, and file access scopes.</p>
+    <!-- D. SETTINGS DRAWER -->
+    <div id="drawer-settings" class="agy-slide-drawer" style="display:none;">
+      <div class="agy-drawer-header">
+        <div class="agy-drawer-title">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 10a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></svg>
+          <h3>Settings & AI Providers</h3>
+        </div>
+        <button class="agy-close-drawer-btn" data-close="drawer-settings" aria-label="Close Settings">&times;</button>
+      </div>
+      <div class="agy-drawer-body agy-settings-scroll">
+        <div class="agy-form-group">
+          <label class="agy-form-label">Local Agent Engine WebSocket URL</label>
+          <input type="text" id="setting-engine-url" class="agy-form-input" value="ws://127.0.0.1:3721">
         </div>
 
-        <div class="agy-settings-form">
-          <div class="agy-form-group">
-            <label>Local Agent Engine WebSocket URL</label>
-            <input type="text" id="setting-engine-url" class="agy-input" value="ws://127.0.0.1:3721">
+        <div class="agy-form-group">
+          <label class="agy-form-label">Security Authentication Token</label>
+          <input type="password" id="setting-auth-token" class="agy-form-input" placeholder="Token from engine setup or leave empty for auto">
+          <div style="display:flex; gap:6px; margin-top:6px;">
+            <input type="text" id="setting-pairing-code" class="agy-form-input" placeholder="Pairing Code" maxlength="12" style="font-family:monospace; text-transform:uppercase;">
+            <button id="btn-pair-engine" class="agy-mini-btn" style="white-space:nowrap;">Pair Engine</button>
           </div>
-
-          <div class="agy-form-group">
-            <label>Security Authentication Token</label>
-            <input type="password" id="setting-auth-token" class="agy-input" placeholder="Token from engine setup or leave empty for auto">
-            <div class="agy-add-workspace-row" style="margin-top: 6px;">
-              <input type="text" id="setting-pairing-code" class="agy-input" placeholder="6-char Pairing Code (e.g. from engine)" maxlength="12" style="font-family:monospace; text-transform:uppercase;">
-              <button id="btn-pair-engine" class="agy-small-btn" style="white-space:nowrap;">Pair Engine</button>
-            </div>
-            <div id="pairing-hint" style="font-size:11px; margin-top:4px; display:none;"></div>
-          </div>
-
-          <div class="agy-form-group">
-            <label>Default AI Provider</label>
-            <select id="setting-provider" class="agy-select full-width">
-              <option value="hybrid" selected>Hybrid AI (Auto Routing)</option>
-              <option value="fallback">Autonomous Engine (Zero-Config Built-in)</option>
-              <option value="gemini">Google Gemini 2.0</option>
-              <option value="claude">Anthropic Claude 3.5 Sonnet</option>
-              <option value="openai">OpenAI GPT-4o</option>
-              <option value="ollama">Local Ollama / LM Studio (localhost:11434)</option>
-            </select>
-          </div>
-
-          <div class="agy-form-group">
-            <label>Hybrid Routing Policy</label>
-            <select id="setting-routing-policy" class="agy-select full-width">
-              <option value="balanced" selected>Balanced (Smart Escalation to Cloud for Complex Tasks)</option>
-              <option value="privacy-first">Privacy-First (Strict Local/Offline Isolation for Code & Files)</option>
-              <option value="cloud-preferred">Cloud-Preferred (Prioritize Cloud LLMs)</option>
-              <option value="manual">Manual (Strictly follow selected provider)</option>
-            </select>
-          </div>
-
-          <!-- Approved Workspaces Directory Management -->
-          <div class="agy-form-group">
-            <label>Approved Workspaces (Local Filesystem Scope)</label>
-            <div id="workspaces-list" class="agy-workspaces-box">
-              <div style="font-size:11px;color:#9CA3AF;padding:4px;">Loading approved workspaces...</div>
-            </div>
-            <div class="agy-add-workspace-row">
-              <input type="text" id="input-new-workspace" class="agy-input" placeholder="Add path (e.g. D:\Coding\Project)">
-              <button id="btn-add-workspace" class="agy-small-btn" style="white-space:nowrap;">+ Add</button>
-            </div>
-          </div>
-
-          <div class="agy-form-group">
-            <label>Google Gemini API Key</label>
-            <input type="password" id="setting-gemini-key" class="agy-input" placeholder="AIzaSy...">
-          </div>
-
-          <div class="agy-form-group">
-            <label>Anthropic API Key</label>
-            <input type="password" id="setting-anthropic-key" class="agy-input" placeholder="sk-ant-...">
-          </div>
-
-          <div class="agy-form-group">
-            <label>OpenAI API Key</label>
-            <input type="password" id="setting-openai-key" class="agy-input" placeholder="sk-proj-...">
-          </div>
-
-          <div class="agy-form-group">
-            <label>Ollama / Local LLM Base URL</label>
-            <input type="text" id="setting-ollama-url" class="agy-input" value="http://localhost:11434">
-          </div>
-
-          <div class="agy-form-group">
-            <label class="agy-checkbox-label">
-              <input type="checkbox" id="setting-audio-feedback" checked>
-              <span>Enable voice audio feedback (Speech Synthesis)</span>
-            </label>
-          </div>
-
-          <!-- Provider Connectivity Diagnostic Card -->
-          <div class="agy-form-group">
-            <label>Provider Live Status</label>
-            <div id="provider-health-badge" class="agy-health-card">
-              <span style="font-size:11px;color:#9CA3AF;">Checking provider connectivity...</span>
-            </div>
-          </div>
-
-          <button id="save-settings-btn" class="agy-primary-btn">Save Settings</button>
-          <div id="settings-saved-hint" class="agy-success-hint" style="display: none;">Settings saved successfully!</div>
+          <div id="pairing-hint" class="agy-hint-text" style="display:none;"></div>
         </div>
-      </section>
 
-    </main>
+        <div class="agy-form-group">
+          <label class="agy-form-label">Primary AI Provider</label>
+          <select id="setting-provider" class="agy-form-select">
+            <option value="gemini" selected>Google Gemini 3.8 Flash</option>
+            <option value="gemini-pro">Google Gemini 3.8 Pro</option>
+            <option value="hybrid">Hybrid AI (Auto Routing)</option>
+            <option value="fallback">Autonomous Engine (Local Companion)</option>
+            <option value="claude">Anthropic Claude 3.5 Sonnet</option>
+            <option value="openai">OpenAI GPT-4o</option>
+            <option value="ollama">Local Ollama (localhost:11434)</option>
+          </select>
+        </div>
+
+        <div class="agy-form-group">
+          <label class="agy-form-label">Routing & Privacy Policy</label>
+          <select id="setting-routing-policy" class="agy-form-select">
+            <option value="balanced" selected>Balanced (Smart Cloud Routing with Local Execution)</option>
+            <option value="privacy-first">Strict Privacy (No Local Code Shared Externally)</option>
+            <option value="cloud-preferred">Cloud Preferred (Maximum Reasoning Depth)</option>
+            <option value="manual">Manual (Follow exact selected provider)</option>
+          </select>
+        </div>
+
+        <div class="agy-form-group">
+          <label class="agy-form-label">Approved Workspaces (Local Filesystem Scope)</label>
+          <div id="workspaces-list" class="agy-workspaces-box">
+            <div style="font-size:11px;color:var(--text-dim);padding:4px;">Loading approved workspaces...</div>
+          </div>
+          <div style="display:flex; gap:6px; margin-top:6px;">
+            <input type="text" id="input-new-workspace" class="agy-form-input" placeholder="D:\Coding\Projects\MyProject">
+            <button id="btn-add-workspace" class="agy-mini-btn" style="white-space:nowrap;">+ Add</button>
+          </div>
+        </div>
+
+        <div class="agy-form-group">
+          <label class="agy-form-label">Google Gemini API Key</label>
+          <input type="password" id="setting-gemini-key" class="agy-form-input" placeholder="AIzaSy...">
+        </div>
+
+        <div class="agy-form-group">
+          <label class="agy-form-label">Anthropic API Key</label>
+          <input type="password" id="setting-anthropic-key" class="agy-form-input" placeholder="sk-ant-...">
+        </div>
+
+        <div class="agy-form-group">
+          <label class="agy-form-label">OpenAI API Key</label>
+          <input type="password" id="setting-openai-key" class="agy-form-input" placeholder="sk-proj-...">
+        </div>
+
+        <div class="agy-form-group">
+          <label class="agy-form-label">Local Ollama Base URL</label>
+          <input type="text" id="setting-ollama-url" class="agy-form-input" value="http://localhost:11434">
+        </div>
+
+        <div class="agy-form-group">
+          <label class="agy-checkbox-label">
+            <input type="checkbox" id="setting-audio-feedback" checked>
+            <span>Enable speech audio feedback</span>
+          </label>
+        </div>
+
+        <div class="agy-form-group">
+          <label class="agy-form-label">Provider Live Status</label>
+          <div id="provider-health-badge" class="agy-health-box">
+            <span style="font-size:11px;color:var(--text-dim);">Checking connectivity...</span>
+          </div>
+        </div>
+
+        <button id="save-settings-btn" class="agy-primary-btn">Save Settings</button>
+        <div id="settings-saved-hint" class="agy-toast-success" style="display:none;">✓ Settings saved successfully</div>
+      </div>
+    </div>
+
   </div>
 
   <script src="sidepanel.js"></script>

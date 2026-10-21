@@ -11,6 +11,8 @@ class PermissionManager {
     );
     this.pendingApprovals = new Map();
     this.sessionAuthorizations = new Set();
+    this.activeGrants = new Map(); // grantId -> { action, resource, scope, expiresAt, riskLevel }
+    this.authorizedDomains = new Map(); // domain -> { scope, authorizedAt, expiresAt }
 
     // Sensitive files patterns that require explicit authorization
     this.sensitiveFilePatterns = [
@@ -25,6 +27,124 @@ class PermissionManager {
       /\.gitconfig$/i,
       /\.bash_history$/i
     ];
+  }
+
+  // Authorize a domain for authenticated web actions (Section 11)
+  authorizeDomain(domain, scope = 'read_only', lifetimeMs = 3600000) {
+    if (!domain || typeof domain !== 'string') return false;
+    const clean = domain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0];
+    this.authorizedDomains.set(clean, {
+      domain: clean,
+      scope,
+      authorizedAt: Date.now(),
+      expiresAt: Date.now() + lifetimeMs
+    });
+    return true;
+  }
+
+  isDomainAuthorized(domain, requiredScope = 'read_only') {
+    if (!domain || typeof domain !== 'string') return false;
+    const clean = domain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0];
+    const auth = this.authorizedDomains.get(clean);
+    if (!auth) return false;
+    if (Date.now() > auth.expiresAt) {
+      this.authorizedDomains.delete(clean);
+      return false;
+    }
+    if (requiredScope === 'write' && auth.scope === 'read_only') return false;
+    return true;
+  }
+
+  // Add a structured permission grant (Section 12)
+  addGrant({ action, resource, scope = 'task', lifetimeMs = 3600000, riskLevel = 'medium' }) {
+    if (!action) return null;
+    const grantId = `grant_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+    const grant = {
+      grantId,
+      action: action.toLowerCase(),
+      resource: resource ? this.canonicalizePath(resource) || resource : null,
+      scope,
+      riskLevel,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + lifetimeMs
+    };
+    this.activeGrants.set(grantId, grant);
+    return grant;
+  }
+
+  // Check if an action on a resource is authorized by an active unexpired grant
+  isActionCoveredByGrant(action, targetPath = null) {
+    if (!action) return false;
+    const now = Date.now();
+    const actionNorm = action.toLowerCase();
+    const targetCanon = targetPath ? (this.canonicalizePath(targetPath) || targetPath) : null;
+
+    for (const [id, grant] of this.activeGrants.entries()) {
+      if (now > grant.expiresAt) {
+        this.activeGrants.delete(id);
+        continue;
+      }
+
+      // Check action match
+      const actionMatches = grant.action === '*' ||
+        grant.action === actionNorm ||
+        (grant.action === 'write_file' && (actionNorm === 'patch_file' || actionNorm === 'write_file')) ||
+        (grant.action === 'modify_files' && (actionNorm === 'patch_file' || actionNorm === 'write_file'));
+
+      if (!actionMatches) continue;
+
+      // If grant specifies a resource path, target must be inside that resource
+      if (grant.resource && targetCanon) {
+        const isWin = process.platform === 'win32';
+        const normGrant = isWin ? grant.resource.toLowerCase() : grant.resource;
+        const normTarget = isWin ? targetCanon.toLowerCase() : targetCanon;
+        const rel = path.relative(normGrant, normTarget);
+        if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+          return true;
+        }
+      } else if (!grant.resource) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Parse natural language permission requests into structured grants (Section 12)
+  parseNaturalLanguageGrant(text, defaultDir = null) {
+    if (!text || typeof text !== 'string') return null;
+    const lower = text.toLowerCase();
+
+    // Check for explicit grant intent
+    const hasGrantIntent = (lower.includes('allow') || lower.includes('grant') || lower.includes('permit') || lower.includes('authorize')) &&
+      (lower.includes('without asking') || lower.includes('for this task') || lower.includes('for the whole task') || lower.includes('automatically'));
+
+    if (!hasGrantIntent) return null;
+
+    // Detect target action
+    let action = null;
+    if (lower.includes('write') || lower.includes('modify') || lower.includes('edit') || lower.includes('create file')) {
+      action = 'write_file';
+    } else if (lower.includes('terminal') || lower.includes('command') || lower.includes('run test') || lower.includes('execute')) {
+      action = 'execute_command';
+    }
+
+    if (!action) return null;
+
+    // Detect resource
+    let targetResource = null;
+    if (this.approvedDirectories.length > 0) {
+      targetResource = defaultDir && this.isPathApproved(defaultDir) ? defaultDir : this.approvedDirectories[0];
+    }
+
+    if (!targetResource) return null;
+
+    return this.addGrant({
+      action,
+      resource: targetResource,
+      scope: 'task',
+      lifetimeMs: 3600000,
+      riskLevel: 'medium'
+    });
   }
 
   // Canonicalize a path and resolve symlinks defensively
@@ -162,7 +282,8 @@ class PermissionManager {
     // If tool accesses local filesystem or workspace, enforce that at least one workspace is configured
     const workspaceTools = [
       'list_files', 'search_files', 'read_file', 'file_info',
-      'write_file', 'patch_file', 'delete_file', 'execute_command'
+      'write_file', 'patch_file', 'delete_file', 'execute_command',
+      'create_directory', 'copy_file', 'move_file'
     ];
     if (workspaceTools.includes(tool) && !this.isWorkspaceConfigured()) {
       return {
@@ -184,7 +305,29 @@ class PermissionManager {
       case 'browser_scroll':
       case 'get_system_info':
       case 'clipboard_write':
+      case 'list_available_credentials':
         return { allowed: true, needsApproval: false, riskLevel: 'low' };
+
+      case 'create_directory': {
+        const dirPath = params.dirPath || params.directory || params.path;
+        if (!dirPath || !this.isPathApproved(dirPath)) {
+          return { allowed: false, needsApproval: false, blocked: true, riskLevel: 'forbidden', reason: `Directory "${dirPath}" is outside approved workspace directories.` };
+        }
+        return { allowed: true, needsApproval: false, riskLevel: 'low' };
+      }
+
+      case 'copy_file':
+      case 'move_file': {
+        const src = this.normalizeFilePath({ path: params.source || params.src || params.filePath });
+        const dst = this.normalizeFilePath({ path: params.destination || params.dest || params.targetPath });
+        if (!src || !dst || !this.isPathApproved(src) || !this.isPathApproved(dst)) {
+          return { allowed: false, needsApproval: false, blocked: true, riskLevel: 'forbidden', reason: 'Source or destination path is outside approved workspace directories.' };
+        }
+        if (tool === 'move_file' && this.config.security?.requireApprovalForFileDelete !== false) {
+          return { allowed: false, needsApproval: true, riskLevel: 'medium', reason: `Moving or renaming file "${path.basename(src)}"` };
+        }
+        return { allowed: true, needsApproval: false, riskLevel: 'low' };
+      }
 
       // Clipboard Read: Sensitive because it may contain passwords or private keys
       case 'clipboard_read': {
@@ -258,6 +401,11 @@ class PermissionManager {
             reason: `Attempting to write file outside approved directories: "${filePath}". Action strictly forbidden.`
           };
         }
+        // Check if covered by authorized user grant (Section 12)
+        if (this.isActionCoveredByGrant('write_file', filePath) && !this.isSensitiveFile(filePath)) {
+          return { allowed: true, needsApproval: false, riskLevel: 'medium', grantApplied: true };
+        }
+
         // Default requireApprovalForFileWrite is true per Phase 10.5
         if (this.config.security?.requireApprovalForFileWrite !== false) {
           const isPatch = tool === 'patch_file';
@@ -342,6 +490,11 @@ class PermissionManager {
           }
         }
 
+        // Check if covered by user grant (Section 12)
+        if (this.isActionCoveredByGrant('execute_command', params.cwd || '.')) {
+          return { allowed: true, needsApproval: false, riskLevel: 'medium', grantApplied: true };
+        }
+
         // Shell executions require confirmation by default per Security Policy
         if (this.config.security?.requireApprovalForShell !== false) {
           return {
@@ -352,6 +505,20 @@ class PermissionManager {
           };
         }
         return { allowed: true, needsApproval: false, riskLevel: 'high' };
+      }
+
+      // Website & Application Brokered Authentication (Section 10 & 11)
+      case 'broker_authenticate': {
+        const domain = params.targetDomain;
+        if (domain && this.isDomainAuthorized(domain)) {
+          return { allowed: true, needsApproval: false, riskLevel: 'low', domainAuthorized: true };
+        }
+        return {
+          allowed: false,
+          needsApproval: true,
+          riskLevel: 'high',
+          reason: `Authorize website sign-in to "${domain || 'target domain'}"`
+        };
       }
 
       // Desktop App Launching

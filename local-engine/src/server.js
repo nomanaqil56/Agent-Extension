@@ -17,6 +17,9 @@ const MemoryManager = require('./agent/memory');
 const AgentOrchestrator = require('./agent/orchestrator');
 const { HybridRouter } = require('./agent/providers');
 const OllamaProvider = require('./agent/providers/ollama');
+const CredentialVault = require('./security/vault');
+const CredentialBroker = require('./security/broker');
+const ModelManager = require('./agent/models');
 
 const crypto = require('crypto');
 
@@ -288,6 +291,9 @@ const permissionManager = new PermissionManager(config);
 const auditLogger = new AuditLogger();
 const emergencyCoordinator = new EmergencyCoordinator(permissionManager, auditLogger);
 const memoryManager = new MemoryManager();
+const credentialVault = new CredentialVault();
+const credentialBroker = new CredentialBroker(credentialVault, permissionManager, auditLogger);
+const modelManager = new ModelManager({ ...config, ...secrets }, credentialVault);
 
 // Server context for browser bridge
 let extensionClient = null;
@@ -299,10 +305,17 @@ const toolRegistry = new ToolRegistry(
   permissionManager,
   auditLogger,
   emergencyCoordinator,
-  serverContext
+  serverContext,
+  credentialBroker
 );
 
-const orchestrator = new AgentOrchestrator(toolRegistry, memoryManager, { ...config, ...secrets });
+const orchestrator = new AgentOrchestrator(
+  toolRegistry,
+  memoryManager,
+  { ...config, ...secrets },
+  modelManager,
+  credentialBroker
+);
 
 // Initialize Express App
 const app = express();
@@ -713,7 +726,25 @@ app.post('/config', authenticateHttp, (req, res) => {
     config = candidateConfig;
     secrets = candidateSecrets;
 
-    // Dynamically update orchestrator config with merged settings and credentials
+    // Synchronize encrypted Credential Vault (Section 9)
+    if (secrets.geminiApiKey) {
+      credentialVault.storeSecret('gemini', secrets.geminiApiKey, { category: 'provider_key', provider: 'gemini' });
+    } else if (candidateSecrets.geminiApiKey === '') {
+      credentialVault.deleteSecret('gemini');
+    }
+    if (secrets.openaiApiKey) {
+      credentialVault.storeSecret('openai', secrets.openaiApiKey, { category: 'provider_key', provider: 'openai' });
+    } else if (candidateSecrets.openaiApiKey === '') {
+      credentialVault.deleteSecret('openai');
+    }
+    if (secrets.anthropicApiKey) {
+      credentialVault.storeSecret('anthropic', secrets.anthropicApiKey, { category: 'provider_key', provider: 'anthropic' });
+    } else if (candidateSecrets.anthropicApiKey === '') {
+      credentialVault.deleteSecret('anthropic');
+    }
+
+    // Dynamically update orchestrator & modelManager config with merged settings and credentials
+    modelManager.updateConfig({ ...config, ...secrets });
     orchestrator.updateConfig({ ...config, ...secrets });
 
     auditLogger.log({
@@ -820,6 +851,24 @@ app.get('/providers', authenticateHttp, async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Provider connection testing (Section 5 & 7)
+app.post('/provider/test', authenticateHttp, async (req, res) => {
+  try {
+    const provider = req.body?.provider || config.activeProvider || 'gemini';
+    const result = await modelManager.testConnection(provider);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Stored credentials metadata listing (Section 9 & 10) - NO SECRETS
+app.get('/credentials', authenticateHttp, (req, res) => {
+  res.json({
+    credentials: credentialBroker.listAvailableCredentials()
+  });
 });
 
 // Audit retrieval
@@ -1062,6 +1111,39 @@ wss.on('connection', (ws, req) => {
               currentTaskAbort = null;
             }
           }
+          break;
+        }
+
+        case 'TASK_CANCEL':
+          if (currentTaskAbort) {
+            currentTaskAbort.abort();
+            currentTaskAbort = null;
+          }
+          ws.send(JSON.stringify({
+            type: 'TASK_COMPLETE',
+            conversationId: msg.conversationId || null,
+            success: false,
+            cancelled: true,
+            summary: '🛑 Task was cancelled by user.'
+          }));
+          break;
+
+        case 'PROVIDER_TEST': {
+          const testProvider = msg.provider || config.activeProvider || 'gemini';
+          const testRes = await modelManager.testConnection(testProvider);
+          ws.send(JSON.stringify({
+            type: 'PROVIDER_TEST_RESULT',
+            provider: testProvider,
+            ...testRes
+          }));
+          break;
+        }
+
+        case 'GET_CREDENTIALS': {
+          ws.send(JSON.stringify({
+            type: 'CREDENTIALS_LIST',
+            credentials: credentialBroker.listAvailableCredentials()
+          }));
           break;
         }
 
