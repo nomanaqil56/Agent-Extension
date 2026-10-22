@@ -154,13 +154,13 @@ Upon startup, an ephemeral **8-character Pairing Code** is displayed in the engi
 Run the verification suite to execute automated unit, security, privacy, and WebSocket integration tests:
 
 ```bash
-# Run all automated test suites (97 checks across unit, autonomous, E2E, and privacy)
+# Run all automated test suites (98 checks across unit, autonomous, E2E, and privacy)
 npm test
 
 # Run unit & security sandbox tests (57 tests)
 npm run test:engine
 
-# Run autonomous ReAct architecture, vault rotation, broker, and permission tests (14 tests)
+# Run autonomous ReAct architecture, vault rotation, broker, and permission tests (15 tests)
 npm run test:autonomous
 
 # Run End-to-End WebSocket, Pairing, CORS, and Settings test suite (7 tests)

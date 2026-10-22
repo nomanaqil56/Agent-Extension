@@ -347,10 +347,14 @@ $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [S
   }
 
   // macOS Keychain storage via /usr/bin/security
+  // Feeds command over STDIN via interactive mode (-i) to prevent exposing the secret key in process command-line arguments
   keychainSaveKey(b64Key) {
-    execFileSync('/usr/bin/security', [
-      'add-generic-password', '-a', 'antigravity-agent', '-s', 'antigravity-vault-key', '-w', b64Key, '-U'
-    ], { timeout: 5000, stdio: 'ignore' });
+    const cmd = `add-generic-password -a antigravity-agent -s antigravity-vault-key -w ${b64Key} -U\n`;
+    execFileSync('/usr/bin/security', ['-i'], {
+      input: cmd,
+      timeout: 5000,
+      stdio: ['pipe', 'ignore', 'pipe']
+    });
   }
 
   // macOS Keychain retrieval via /usr/bin/security
@@ -362,11 +366,15 @@ $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [S
 
   // Get verified security and storage protection status
   getSecurityStatus() {
+    const isKeyProtectedByOs = (this.protectionMechanism === 'dpapi' || this.protectionMechanism === 'keychain') && this.isVaultUsable();
+    const isOsProtectionAvailable = Boolean(this.dpapiAvailable || this.keychainAvailable);
+
     return {
       protectionMechanism: this.protectionMechanism,
       dpapiAvailable: this.dpapiAvailable,
       keychainAvailable: this.keychainAvailable,
-      isOsProtected: this.dpapiAvailable || this.keychainAvailable,
+      isOsAvailable: isOsProtectionAvailable,
+      isOsProtected: isKeyProtectedByOs,
       isUsable: this.isVaultUsable(),
       corruptedOnLoad: this.corruptedOnLoad,
       keyMissing: this.keyMissingForExistingVault,
@@ -793,7 +801,9 @@ $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [S
           this.writeAtomicKeySync(this.vaultKeyPath, 'KEYCHAIN:antigravity-vault-key');
         } catch (e) {}
       }
-      this.saveVault();
+      try {
+        this.saveVault();
+      } catch (saveErr) {}
       throw new Error(`Key rotation failed and was rolled back: ${err.message}`);
     }
   }

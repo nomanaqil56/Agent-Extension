@@ -141,9 +141,9 @@ if (!fs.existsSync(envFile)) {
   }
 }
 
-// 5b. Remove secrets from tracked config.json if present
-try {
-  if (fs.existsSync(configJsonPath)) {
+// 5b. Remove secrets from tracked config.json if present (MANDATORY SANITIZATION)
+if (fs.existsSync(configJsonPath)) {
+  try {
     const rawConfig = JSON.parse(fs.readFileSync(configJsonPath, 'utf8'));
     let cleaned = false;
     ['authToken', 'geminiApiKey', 'anthropicApiKey', 'openaiApiKey', 'geminiKey', 'anthropicKey', 'openAiKey', 'openaiKey'].forEach(k => {
@@ -158,9 +158,10 @@ try {
     } else {
       console.log('   ✓ local-engine/config.json configuration clean.');
     }
+  } catch (cfgErr) {
+    console.error(`   ✗ FATAL: Mandatory configuration sanitization failed on "${configJsonPath}": ${cfgErr.message}`);
+    process.exit(1);
   }
-} catch (cfgErr) {
-  console.warn(`   ! Warning inspecting config.json: ${cfgErr.message}`);
 }
 
 // ===================================================
@@ -171,19 +172,40 @@ try {
   require('./generate-icons.js');
   console.log('   ✓ Extension icons generated and verified.');
 } catch (iconErr) {
-  console.warn(`   ! Note during icon generation: ${iconErr.message}`);
-}
-
-// Validate extension manifest
-const manifestPath = path.join(extensionDir, 'manifest.json');
-if (!fs.existsSync(manifestPath)) {
-  console.error(`   ✗ FATAL: Extension manifest.json missing at: "${manifestPath}"`);
+  console.error(`   ✗ FATAL: Mandatory extension icon generation failed: ${iconErr.message}`);
   process.exit(1);
 }
+
+// Validate all mandatory extension assets
+const requiredExtensionAssets = [
+  path.join(extensionDir, 'manifest.json'),
+  path.join(extensionDir, 'icons', 'icon16.png'),
+  path.join(extensionDir, 'icons', 'icon48.png'),
+  path.join(extensionDir, 'icons', 'icon128.png'),
+  path.join(extensionDir, 'sidepanel', 'sidepanel.html'),
+  path.join(extensionDir, 'sidepanel', 'sidepanel.css'),
+  path.join(extensionDir, 'sidepanel', 'sidepanel.js'),
+  path.join(extensionDir, 'background', 'background.js'),
+  path.join(extensionDir, 'content', 'content.js'),
+  path.join(extensionDir, 'content', 'content.css')
+];
+
+for (const assetPath of requiredExtensionAssets) {
+  if (!fs.existsSync(assetPath)) {
+    console.error(`   ✗ FATAL: Mandatory extension asset missing at: "${assetPath}"`);
+    process.exit(1);
+  }
+}
+
+// Validate extension manifest schema
+const manifestPath = path.join(extensionDir, 'manifest.json');
 try {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   if (manifest.manifest_version !== 3) {
     throw new Error('Manifest version must be 3.');
+  }
+  if (!manifest.side_panel?.default_path) {
+    throw new Error('Manifest missing side_panel.default_path.');
   }
   console.log('   ✓ Extension Manifest V3 verified.');
 } catch (mErr) {

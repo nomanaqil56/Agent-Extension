@@ -6,6 +6,7 @@ const assert = require('assert');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 
 const InstructionManager = require('../src/agent/instructions');
 const CredentialVault = require('../src/security/vault');
@@ -664,6 +665,101 @@ async function runAutonomousTestSuite() {
     const reopenedVault = new CredentialVault(freshVaultPath);
     assert.strictEqual(reopenedVault.isVaultUsable(), true);
     assert.strictEqual(reopenedVault.getSecret('integration_secret'), 'test-val-xyz-987', 'Reopened vault must decrypt persisted secret');
+  });
+
+  // ==========================================
+  // SECTION 15: Security Status Precision, Rotation Rollback & Setup Fail-Closed Checks
+  // ==========================================
+  await test('Security Assurance: Status distinction, key rotation rollback & setup fail-closed integrity', async () => {
+    // 1. getSecurityStatus() distinguishes OS availability from active key mechanism
+    const statusVaultPath = path.join(testTempDir, 'status_distinction.vault.enc');
+    const statusVault = new CredentialVault(statusVaultPath);
+    const secStatus = statusVault.getSecurityStatus();
+
+    // OS availability must be a distinct boolean
+    assert.strictEqual(typeof secStatus.isOsAvailable, 'boolean');
+    assert.strictEqual(typeof secStatus.isOsProtected, 'boolean');
+    if (secStatus.protectionMechanism === 'dpapi' || secStatus.protectionMechanism === 'keychain') {
+      assert.strictEqual(secStatus.isOsProtected, true, 'isOsProtected must be true when mechanism is dpapi/keychain and usable');
+    }
+
+    // Explicit ENGINE_VAULT_KEY override must NOT report isOsProtected=true even if OS supports DPAPI/Keychain
+    const envKeyHex = crypto.randomBytes(32).toString('hex');
+    process.env.ENGINE_VAULT_KEY = envKeyHex;
+    try {
+      const envVaultPath = path.join(testTempDir, 'env_override.vault.enc');
+      const envVault = new CredentialVault(envVaultPath);
+      const envStatus = envVault.getSecurityStatus();
+      assert.strictEqual(envStatus.protectionMechanism, 'env-master-key');
+      assert.strictEqual(envStatus.isOsProtected, false, 'isOsProtected must be false when vault uses ENGINE_VAULT_KEY override');
+      assert.strictEqual(envStatus.isUsable, true);
+    } finally {
+      delete process.env.ENGINE_VAULT_KEY;
+    }
+
+    // 2. Key rotation failure rolls back cleanly without data loss
+    const rollbackVaultPath = path.join(testTempDir, 'rollback_test.vault.enc');
+    const rollbackVault = new CredentialVault(rollbackVaultPath);
+    rollbackVault.storeSecret('critical_secret', 'preserve-this-at-all-costs');
+    assert.strictEqual(rollbackVault.getSecret('critical_secret'), 'preserve-this-at-all-costs');
+
+    // Attempt rotation with invalid 16-byte key (must fail validation)
+    let rotationFailed = false;
+    try {
+      rollbackVault.rotateKey(crypto.randomBytes(16)); // Invalid length
+    } catch (rErr) {
+      rotationFailed = true;
+      assert.ok(rErr.message.includes('Rotation key must be a 32-byte Buffer') || rErr.message.includes('Key rotation failed and was rolled back'));
+    }
+    assert.strictEqual(rotationFailed, true, 'Invalid key rotation must fail');
+    assert.strictEqual(rollbackVault.getSecret('critical_secret'), 'preserve-this-at-all-costs', 'Original credential must be intact after rotation failure');
+
+    // Simulate error during rotation step (e.g. saveVault throws) to test clean rollback
+    const originalSave = rollbackVault.saveVault;
+    let rollbackTriggered = false;
+    rollbackVault.saveVault = function() {
+      throw new Error('Simulated disk full during key rotation save');
+    };
+    try {
+      rollbackVault.rotateKey(crypto.randomBytes(32));
+    } catch (rbErr) {
+      rollbackTriggered = true;
+      assert.ok(rbErr.message.includes('Key rotation failed and was rolled back'));
+    } finally {
+      rollbackVault.saveVault = originalSave;
+    }
+    assert.strictEqual(rollbackTriggered, true, 'Rollback handler must be triggered upon write failure');
+    assert.strictEqual(rollbackVault.getSecret('critical_secret'), 'preserve-this-at-all-costs', 'Credential intact after simulated rotation failure');
+
+    // Reopen vault from disk to confirm on-disk vault was not corrupted by failed rotation
+    const reloadedRollback = new CredentialVault(rollbackVaultPath);
+    assert.strictEqual(reloadedRollback.isVaultUsable(), true);
+    assert.strictEqual(reloadedRollback.getSecret('critical_secret'), 'preserve-this-at-all-costs', 'Persisted credentials must survive failed rotation attempt');
+
+    // 3. Setup fail-closed verification: Corrupted config.json must cause setup to fail
+    const { execSync } = require('child_process');
+    const mockSetupDir = path.join(testTempDir, 'mock_setup_fail');
+    fs.mkdirSync(path.join(mockSetupDir, 'local-engine'), { recursive: true });
+    fs.mkdirSync(path.join(mockSetupDir, 'scripts'), { recursive: true });
+    fs.mkdirSync(path.join(mockSetupDir, 'extension', 'icons'), { recursive: true });
+    fs.writeFileSync(path.join(mockSetupDir, 'package.json'), JSON.stringify({ name: 'test' }));
+    fs.writeFileSync(path.join(mockSetupDir, 'local-engine', 'package.json'), JSON.stringify({ name: 'engine' }));
+    fs.writeFileSync(path.join(mockSetupDir, 'local-engine', 'config.json'), '{ invalid json config !!!');
+    fs.copyFileSync(path.join(__dirname, '..', '..', 'scripts', 'setup.js'), path.join(mockSetupDir, 'scripts', 'setup.js'));
+    fs.copyFileSync(path.join(__dirname, '..', '..', 'scripts', 'generate-icons.js'), path.join(mockSetupDir, 'scripts', 'generate-icons.js'));
+
+    let setupExitedWithError = false;
+    try {
+      execSync(`node "${path.join(mockSetupDir, 'scripts', 'setup.js')}"`, {
+        cwd: mockSetupDir,
+        stdio: 'pipe',
+        timeout: 10000
+      });
+    } catch (setupErr) {
+      setupExitedWithError = true;
+      assert.notStrictEqual(setupErr.status, 0, 'Setup must exit with non-zero status on corrupted config.json');
+    }
+    assert.strictEqual(setupExitedWithError, true, 'Setup must fail closed when config.json is corrupted');
   });
 
   // Clean up test sandbox
