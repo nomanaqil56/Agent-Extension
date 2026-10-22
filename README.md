@@ -28,7 +28,7 @@ A unified AI side panel and computer-capable agent system built with a **Brave/C
 │   • Safe Desktop Spawning (Shell-free, strict arg policies) │
 │   • Safe Clipboard (Piped stdin, zero shell interpolation)  │
 │   • Ephemeral Pairing (5-min expiry, lockout, single-use)   │
-│   • Secret Isolation (Untracked .secrets.json & .env only)  │
+│   • Authoritative Credential Vault (DPAPI / AES-256-GCM)    │
 │   • Instant Emergency Stop Coordinator                      │
 │   • Local Models (Ollama) & Cloud (Gemini, Claude, GPT-4o)  │
 │   • Zero-Config Autonomous Engine (Deterministic Offline)   │
@@ -106,7 +106,7 @@ From the root workspace directory, run:
 ```bash
 npm run setup
 ```
-This installs the `local-engine` dependencies, generates a cryptographically secure token into `.secrets.json`, strips secrets from `config.json`, and ensures assets are in place.
+This installs the `local-engine` dependencies, initializes the secure Credential Vault with an encrypted security token, strips any secrets from `config.json`, and ensures assets are in place.
 
 ### Step 2: Start the Local Agent Engine
 On Windows:
@@ -134,7 +134,7 @@ Upon startup, an ephemeral **8-character Pairing Code** is displayed in the engi
 2. Go to the **Settings Tab**.
 3. Under **Security Authentication Token**, enter the 8-character **Pairing Code** shown in your engine console and click **Pair Engine**.
 4. The extension securely retrieves the session token, handshakes over WebSocket without placing tokens in the URL, and displays `ONLINE :3721`.
-5. Enter your API keys and click **Save Settings** to synchronize them directly with the Local Engine.
+5. Enter your API keys and click **Save Settings** to synchronize them directly with the Local Engine's Credential Vault.
 6. Under **Approved Workspaces**, click **+ Add Workspace** to approve your project folder.
 
 ---
@@ -154,13 +154,19 @@ Upon startup, an ephemeral **8-character Pairing Code** is displayed in the engi
 Run the verification suite to execute automated unit, security, privacy, and WebSocket integration tests:
 
 ```bash
-# Run unit & security sandbox tests (42 checks)
+# Run all automated test suites (91 checks across unit, autonomous, E2E, and privacy)
+npm test
+
+# Run unit & security sandbox tests
 npm run test:engine
+
+# Run autonomous ReAct architecture tests
+npm run test:autonomous
 
 # Run End-to-End WebSocket, Pairing, CORS, and Settings test suite
 npm run test:e2e
 
-# Run Privacy-First Sentinel Leak Prevention tests (7 checks)
+# Run Privacy-First Sentinel Leak Prevention tests
 npm run test:privacy
 
 # Run complete diagnostic verification (checks syntax, manifest, secrets, and all test suites)
@@ -171,12 +177,12 @@ npm run verify
 
 ## 🔒 Security Architecture & Secret Isolation
 
-- **Zero Tracked Secrets**: API keys and authentication tokens are strictly stored in local untracked files (`local-engine/.secrets.json` and `.env`). `config.json` contains only non-secret settings.
+- **Authoritative Encrypted Credential Vault**: API keys and authentication tokens are strictly stored in an encrypted persistent vault backed by Windows DPAPI (with an AES-256-GCM fallback using unguessable 256-bit cryptographically random keys). No plaintext credentials are saved to `config.json` or `.secrets.json`. Legacy plaintext secrets are automatically migrated to encrypted storage and safely retired.
+- **Model Isolation**: Raw API keys, tokens, and passwords never enter LLM prompt contexts, logs, or extension messages. Provider adapters attach credentials internally at the network boundary.
 - **Atomic File Persistence**: Secrets and configuration files are written using atomic `.tmp` file creation, `fsync`, and atomic rename (with fallback collision handling on Windows) to prevent configuration corruption or half-written states.
 - **Loopback Enforcement & CORS**: The engine validates the raw physical socket address (`req.socket.remoteAddress`) for IPv4 `127.0.0.1`, IPv6 `::1`, and IPv4-mapped IPv6 `::ffff:127.0.0.1`, rejecting spoofed Host or proxy headers (`X-Forwarded-For`). Cross-origin requests from arbitrary web pages (`https://...`) are blocked.
 - **Pairing Lifecycle & Recovery**: Pairing codes are ephemeral (5-minute TTL), single-use (consumed upon successful handshake), and protected against brute-force (locked after 5 failed attempts). If a code expires or is locked out:
   - Restart the engine (`npm run start:engine`) to generate a new pairing code.
-  - Alternatively, if running locally, copy the `authToken` from `local-engine/.secrets.json` into Settings directly.
 - **HTTP & WebSocket Authentication**: All state-changing REST endpoints require `Authorization: Bearer <token>`. WebSocket connections authenticate via an immediate `AUTH_HANDSHAKE` message over the socket; tokens in URL query strings are rejected.
 - **Approval Verification & Single-Use**: Action approvals are single-use, expire after a 3-minute TTL, and verify a SHA-256 parameter digest (`paramHash`) at execution time to prevent parameter-tampering attacks.
 - **Privacy-First Sentinel Boundary**: Outbound requests to cloud providers are verified via dedicated sentinel testing (`test:privacy`). Prohibited local filesystem contents, clipboard contents, terminal outputs, and `.env` credentials are blocked from transmission to cloud models. When local tasks execute under Privacy-First, the engine automatically routes to the local Autonomous Engine or Ollama.

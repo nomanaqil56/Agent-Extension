@@ -127,7 +127,34 @@ async function runAutonomousTestSuite() {
     }
     assert.strictEqual(mismatchBlocked, true, 'Credential Broker must reject domain mismatch');
 
-    // 2. Authorized domain flow
+    // 2. Unapproved domain without approval callback must fail closed (Part 7)
+    let missingApprovalBlocked = false;
+    try {
+      await credentialBroker.brokerAuthentication({
+        credentialId: 'cred_github_test',
+        targetDomain: 'github.com'
+      });
+    } catch (e) {
+      missingApprovalBlocked = e.message.includes('Approval required');
+    }
+    assert.strictEqual(missingApprovalBlocked, true, 'Broker must block unapproved domain when approval handler is absent');
+
+    // 3. Unapproved domain with denied approval must fail closed
+    let deniedBlocked = false;
+    try {
+      await credentialBroker.brokerAuthentication({
+        credentialId: 'cred_github_test',
+        targetDomain: 'github.com',
+        onApprovalNeeded: ({ approvalId }) => {
+          permissionManager.resolveApproval(approvalId, false);
+        }
+      });
+    } catch (e) {
+      deniedBlocked = e.message.includes('denied');
+    }
+    assert.strictEqual(deniedBlocked, true, 'Broker must block unapproved domain when approval is denied');
+
+    // 4. Authorized domain flow
     permissionManager.authorizeDomain('github.com');
     const authResult = await credentialBroker.brokerAuthentication({
       credentialId: 'cred_github_test',

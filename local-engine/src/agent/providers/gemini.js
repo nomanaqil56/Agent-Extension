@@ -17,7 +17,7 @@ class GeminiProvider {
 
   async checkHealth() {
     if (!this.apiKey) {
-      return { healthy: false, error: 'Google Gemini API key is missing. Configure in Settings or .secrets.json' };
+      return { healthy: false, error: 'Google Gemini API key is missing. Configure in Settings or Credential Vault' };
     }
     return {
       healthy: true,

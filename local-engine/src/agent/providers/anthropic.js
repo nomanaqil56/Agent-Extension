@@ -17,7 +17,7 @@ class AnthropicProvider {
 
   async checkHealth() {
     if (!this.apiKey) {
-      return { healthy: false, error: 'Anthropic API key is missing. Configure in Settings or .secrets.json' };
+      return { healthy: false, error: 'Anthropic API key is missing. Configure in Settings or Credential Vault' };
     }
     return {
       healthy: true,

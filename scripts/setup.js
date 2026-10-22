@@ -51,20 +51,19 @@ if (!fs.existsSync(envFile)) {
   }
 }
 
-// Ensure secrets are stored in untracked local-engine/.secrets.json
-const secretsJsonPath = path.join(engineDir, '.secrets.json');
+// Store security token in encrypted Credential Vault (Section 7.1 & 7.2)
 try {
-  let secrets = {};
-  if (fs.existsSync(secretsJsonPath)) {
-    try { secrets = JSON.parse(fs.readFileSync(secretsJsonPath, 'utf8')); } catch (e) {}
-  }
-  if (!secrets.authToken) {
-    secrets.authToken = generatedToken;
-    fs.writeFileSync(secretsJsonPath, JSON.stringify(secrets, null, 2), 'utf8');
-    console.log('   ✓ Saved security token to untracked local-engine/.secrets.json.');
+  const CredentialVault = require(path.join(engineDir, 'src', 'security', 'vault.js'));
+  const vault = new CredentialVault();
+  vault.initSecurity();
+  if (!vault.getAuthToken()) {
+    vault.setAuthToken(generatedToken);
+    console.log('   ✓ Security token securely stored in encrypted Credential Vault.');
+  } else {
+    console.log('   ✓ Security token already configured in encrypted Credential Vault.');
   }
 } catch (e) {
-  console.warn('   ! .secrets.json note:', e.message);
+  console.warn('   ! Credential Vault setup note:', e.message);
 }
 
 // Remove secrets from tracked config.json if present

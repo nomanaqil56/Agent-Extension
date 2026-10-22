@@ -97,8 +97,17 @@ class CredentialBroker {
     }
 
     // 3. User approval check (Section 8: enforce required user approval)
-    const isDomainAuthorized = this.permissionManager.isDomainAuthorized(targetDomain, 'write');
-    if (!isDomainAuthorized && onApprovalNeeded) {
+    const isDomainAuthorized = this.permissionManager.isDomainAuthorized(targetDomain);
+    if (!isDomainAuthorized) {
+      if (!onApprovalNeeded) {
+        this.auditLogger.log({
+          action: 'CREDENTIAL_BROKER_APPROVAL_MISSING',
+          credentialId,
+          targetDomain,
+          reason: 'Approval required for domain sign-in but no approval handler provided.'
+        });
+        throw new Error(`Approval required to authenticate to "${targetDomain}", but no approval callback was provided.`);
+      }
       const risk = {
         allowed: false,
         needsApproval: true,

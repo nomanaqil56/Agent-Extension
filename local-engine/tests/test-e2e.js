@@ -59,8 +59,28 @@ async function runE2ETest() {
       // console.error(`[Server Err] ${d.toString().trim()}`);
     });
 
-    // Wait for server to bind
-    await delay(1500);
+    // Wait for server to bind with active readiness polling
+    let serverReady = false;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      try {
+        const health = await httpRequest({
+          hostname: '127.0.0.1',
+          port: TEST_PORT,
+          path: '/health',
+          method: 'GET'
+        });
+        if (health && health.statusCode === 200) {
+          serverReady = true;
+          break;
+        }
+      } catch (e) {
+        // Server still starting
+      }
+      await delay(150);
+    }
+    if (!serverReady) {
+      throw new Error(`Test server failed to respond on 127.0.0.1:${TEST_PORT} within 7.5 seconds.`);
+    }
 
     // --- TEST 1: First-Run Pairing Flow (POST /pair) ---
     console.log('[Test 1] Testing loopback-only Pairing flow (POST /pair)...');
