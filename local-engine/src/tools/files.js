@@ -93,7 +93,7 @@ class FilesTool {
     };
   }
 
-  // Write or overwrite file
+  // Write or overwrite file atomically
   async writeFile(params = {}) {
     const rawPath = this.permissionManager.normalizeFilePath(params);
     if (!rawPath) {
@@ -104,15 +104,49 @@ class FilesTool {
       throw new Error(`Write path "${resolved}" is outside approved directories.`);
     }
 
+    // Verify symlink destination does not escape approved directories
+    if (fs.existsSync(resolved)) {
+      try {
+        const lstat = fs.lstatSync(resolved);
+        if (lstat.isSymbolicLink()) {
+          const real = fs.realpathSync(resolved);
+          if (!this.permissionManager.isPathApproved(real)) {
+            throw new Error(`Write target "${resolved}" is a symbolic link pointing outside approved workspace.`);
+          }
+        }
+      } catch (e) {
+        if (e.message.includes('outside approved workspace')) throw e;
+      }
+    }
+
     const content = params.content !== undefined ? String(params.content) : '';
     const dir = path.dirname(resolved);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
 
-    fs.writeFileSync(resolved, content, 'utf8');
-    const stat = fs.statSync(resolved);
+    // Atomic write via temp file and rename
+    const tmpFile = `${resolved}.tmp.${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    try {
+      fs.writeFileSync(tmpFile, content, 'utf8');
+      if (process.platform === 'win32' && fs.existsSync(resolved)) {
+        try {
+          fs.renameSync(tmpFile, resolved);
+        } catch (renameErr) {
+          fs.copyFileSync(tmpFile, resolved);
+          fs.unlinkSync(tmpFile);
+        }
+      } else {
+        fs.renameSync(tmpFile, resolved);
+      }
+    } catch (writeErr) {
+      if (fs.existsSync(tmpFile)) {
+        try { fs.unlinkSync(tmpFile); } catch (e) {}
+      }
+      throw writeErr;
+    }
 
+    const stat = fs.statSync(resolved);
     return {
       success: true,
       filePath: resolved,
@@ -121,7 +155,7 @@ class FilesTool {
     };
   }
 
-  // Patch/Replace text inside file
+  // Patch/Replace text inside file atomically
   async patchFile(params = {}) {
     const rawPath = this.permissionManager.normalizeFilePath(params);
     if (!rawPath) {
@@ -136,6 +170,19 @@ class FilesTool {
       throw new Error(`File does not exist: "${resolved}"`);
     }
 
+    // Verify symlink destination does not escape approved directories
+    try {
+      const lstat = fs.lstatSync(resolved);
+      if (lstat.isSymbolicLink()) {
+        const real = fs.realpathSync(resolved);
+        if (!this.permissionManager.isPathApproved(real)) {
+          throw new Error(`Patch target "${resolved}" is a symbolic link pointing outside approved workspace.`);
+        }
+      }
+    } catch (e) {
+      if (e.message.includes('outside approved workspace')) throw e;
+    }
+
     const targetContent = params.targetContent;
     const replacementContent = params.replacementContent !== undefined ? String(params.replacementContent) : '';
     if (targetContent === undefined || targetContent === null) {
@@ -148,7 +195,25 @@ class FilesTool {
     }
 
     const updated = original.replace(targetContent, replacementContent);
-    fs.writeFileSync(resolved, updated, 'utf8');
+    const tmpFile = `${resolved}.tmp.${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    try {
+      fs.writeFileSync(tmpFile, updated, 'utf8');
+      if (process.platform === 'win32' && fs.existsSync(resolved)) {
+        try {
+          fs.renameSync(tmpFile, resolved);
+        } catch (renameErr) {
+          fs.copyFileSync(tmpFile, resolved);
+          fs.unlinkSync(tmpFile);
+        }
+      } else {
+        fs.renameSync(tmpFile, resolved);
+      }
+    } catch (patchErr) {
+      if (fs.existsSync(tmpFile)) {
+        try { fs.unlinkSync(tmpFile); } catch (e) {}
+      }
+      throw patchErr;
+    }
 
     return {
       success: true,
@@ -309,7 +374,13 @@ class FilesTool {
     const dstDir = path.dirname(resDst);
     if (!fs.existsSync(dstDir)) fs.mkdirSync(dstDir, { recursive: true });
 
-    fs.renameSync(resSrc, resDst);
+    try {
+      fs.renameSync(resSrc, resDst);
+    } catch (renameErr) {
+      // Fallback for cross-device or permission lock
+      fs.copyFileSync(resSrc, resDst);
+      fs.unlinkSync(resSrc);
+    }
     return { moved: true, source: resSrc, destination: resDst };
   }
 }

@@ -91,6 +91,26 @@ if (fs.existsSync(configJsonPath)) {
   check('config.json binds strictly to loopback (127.0.0.1)', cfg.host === '127.0.0.1');
 }
 
+// Check Credential Vault protection mechanism
+try {
+  const CredentialVault = require(path.join(root, 'local-engine', 'src', 'security', 'vault.js'));
+  const probeVaultPath = path.join(root, 'local-engine', '.vault.probe.enc');
+  const probeVault = new CredentialVault(probeVaultPath);
+  const secStatus = probeVault.getSecurityStatus();
+  check(`Credential Vault storage initialized (mechanism: ${secStatus.protectionMechanism})`, secStatus.protectionMechanism !== 'unknown');
+  if (secStatus.isOsProtected) {
+    check(`OS-backed credential protection active (${secStatus.protectionMechanism.toUpperCase()})`, true);
+  } else {
+    skip('OS-backed credential protection', 'Using user-protected file mode (0600 permissions); OS-backed DPAPI/Keychain not active in current environment');
+  }
+  try {
+    if (fs.existsSync(probeVault.vaultPath)) fs.unlinkSync(probeVault.vaultPath);
+    if (fs.existsSync(probeVault.vaultKeyPath)) fs.unlinkSync(probeVault.vaultKeyPath);
+  } catch (cleanErr) {}
+} catch (vaultErr) {
+  check('Credential Vault initialization in verify', false, vaultErr.message);
+}
+
 // 3. Syntax Verification (node -c)
 console.log('\n[3] JavaScript Syntax Verification:');
 const filesToCompile = [
@@ -140,12 +160,12 @@ filesToCompile.forEach(relPath => {
 });
 
 // 4. Automated Unit & Security Tests
-console.log('\n[4] Running Automated Unit & Security Test Suite:');
+console.log('\n[4] Running Automated Unit & Security Test Suites:');
 try {
-  execSync('npm test', { cwd: path.join(root, 'local-engine'), stdio: 'inherit' });
-  check('Local Engine Unit & Security Suite passed', true);
+  execSync('npm run test:engine && npm run test:autonomous', { cwd: path.join(root, 'local-engine'), stdio: 'inherit' });
+  check('Local Engine Unit, Security Sandbox & Autonomous Architecture Suites passed', true);
 } catch (e) {
-  check('Local Engine Unit & Security Suite', false, e.message);
+  check('Local Engine Unit, Security Sandbox & Autonomous Architecture Suites', false, e.message);
 }
 
 // 5. Automated E2E WebSocket & Auth Tests

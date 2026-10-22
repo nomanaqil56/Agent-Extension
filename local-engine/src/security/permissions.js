@@ -613,7 +613,12 @@ class PermissionManager {
           'del\\s+/[fF]\\s+/[sS]\\s+/[qQ]\\s+[cC]:',
           ':\\(\\)\\s*\\{\\s*:\\|:&\\s*\\};:',
           'dd\\s+if=',
-          'mkfs(\\.[a-z0-9]+)?\\s+'
+          'mkfs(\\.[a-z0-9]+)?\\s+',
+          '(Invoke-Expression|iex)\\s*(\\(|\\$|`|"|\')',
+          '(Invoke-WebRequest|iwr).*\\|\\s*(iex|Invoke-Expression)',
+          'curl.*\\|\\s*(sh|bash|powershell|pwsh)',
+          'certutil\\s+(-urlcache|-f)',
+          'powershell.*(-e|-encodedcommand)\\s+[A-Za-z0-9+/=]{20,}'
         ];
         const blockedPatterns = this.config.security?.blockedShellPatterns || defaultBlockedPatterns;
         for (const pattern of blockedPatterns) {

@@ -605,9 +605,23 @@ class AgentOrchestrator {
         const { tool, params, tool_call_id } = stepDecision;
         taskState.status = 'executing';
 
-        // Loop Detection: Check if same tool with identical parameters was called 3 consecutive times
+        // Loop Detection: Check if same tool with identical parameters was called consecutively
         const callSig = `${tool}:${JSON.stringify(params || {})}`;
         recentToolCalls.push(callSig);
+        if (recentToolCalls.length >= 5) {
+          const last5 = recentToolCalls.slice(-5);
+          if (last5.every(sig => sig === last5[0])) {
+            taskState.status = 'failed';
+            const loopSummary = `🛑 Task halted: Tool "${tool}" repeated 5 times without forward progress. Execution halted to prevent infinite loop.`;
+            notify({
+              type: 'TASK_COMPLETE',
+              success: false,
+              summary: loopSummary,
+              steps: stepHistory
+            });
+            return { success: false, summary: loopSummary, steps: stepHistory };
+          }
+        }
         if (recentToolCalls.length >= 3) {
           const last3 = recentToolCalls.slice(-3);
           if (last3[0] === last3[1] && last3[1] === last3[2]) {

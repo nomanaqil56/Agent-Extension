@@ -14,8 +14,14 @@ class CredentialVault {
     this.credentials = new Map(); // id -> { encryptedSecret, iv, tag, authType, metadata }
     this.isWindows = process.platform === 'win32';
     this.dpapiAvailable = false;
+    this.keychainAvailable = false;
+    this.protectionMechanism = 'unknown';
     this.encryptionKey = null;
     this.corruptedOnLoad = false;
+    this.keyMissingForExistingVault = false;
+    this.keyDecryptionFailed = false;
+    this.keyProtectionFailed = false;
+    this.keyProtectionError = null;
 
     this.vaultKeyPath = process.env.ENGINE_VAULT_KEY_PATH || `${this.vaultPath}.key`;
     this.initSecurity();
@@ -23,7 +29,52 @@ class CredentialVault {
     this.migrateLegacySecrets();
   }
 
-  // Initialize encryption subsystem
+  // Atomically write a sensitive file with 0600 mode and fsync
+  writeAtomicKeySync(filePath, content) {
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const tmpPath = `${filePath}.tmp.${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    let fd = null;
+    try {
+      fd = fs.openSync(tmpPath, 'w', 0o600);
+      fs.writeFileSync(fd, content, typeof content === 'string' ? 'utf8' : undefined);
+      try { fs.fsyncSync(fd); } catch (e) {}
+      fs.closeSync(fd);
+      fd = null;
+      if (process.platform === 'win32' && fs.existsSync(filePath)) {
+        try {
+          fs.renameSync(tmpPath, filePath);
+        } catch (renameErr) {
+          fs.copyFileSync(tmpPath, filePath);
+          fs.unlinkSync(tmpPath);
+        }
+      } else {
+        fs.renameSync(tmpPath, filePath);
+      }
+      return true;
+    } catch (err) {
+      if (fd !== null) {
+        try { fs.closeSync(fd); } catch (e) {}
+      }
+      if (fs.existsSync(tmpPath)) {
+        try { fs.unlinkSync(tmpPath); } catch (e) {}
+      }
+      throw err;
+    }
+  }
+
+  // Check if vault is in a fully valid, usable cryptographic state
+  isVaultUsable() {
+    return !this.corruptedOnLoad &&
+           !this.keyMissingForExistingVault &&
+           !this.keyDecryptionFailed &&
+           !this.keyProtectionFailed &&
+           Boolean(this.encryptionKey) &&
+           Buffer.isBuffer(this.encryptionKey) &&
+           this.encryptionKey.length === 32;
+  }
+
+  // Initialize encryption subsystem with platform-native OS protection where available
   initSecurity() {
     if (this.isWindows) {
       // Test DPAPI availability via .NET ProtectedData
@@ -33,56 +84,227 @@ class CredentialVault {
         const decrypted = this.dpapiDecrypt(encrypted);
         if (decrypted === testText) {
           this.dpapiAvailable = true;
+          this.protectionMechanism = 'dpapi';
         }
       } catch (e) {
         this.dpapiAvailable = false;
       }
-    }
-
-    // High-entropy 256-bit key for AES-256-GCM fallback (Section 7.2)
-    // ALWAYS initialized so that AES-256-GCM fallback is 100% resilient
-    if (process.env.ENGINE_VAULT_KEY) {
-      this.encryptionKey = crypto.createHash('sha256').update(process.env.ENGINE_VAULT_KEY).digest();
-    } else if (fs.existsSync(this.vaultKeyPath)) {
+    } else if (process.platform === 'darwin') {
+      // Test macOS Keychain availability via /usr/bin/security CLI
       try {
-        const rawKey = fs.readFileSync(this.vaultKeyPath, 'utf8');
-        if (rawKey.startsWith('DPAPI:') && this.dpapiAvailable) {
-          const decryptedB64 = this.dpapiDecrypt(rawKey.slice(6));
-          this.encryptionKey = Buffer.from(decryptedB64, 'base64');
-        } else {
-          const rawBuffer = fs.readFileSync(this.vaultKeyPath);
-          if (rawBuffer.length === 32) {
-            this.encryptionKey = rawBuffer;
-          } else {
-            this.encryptionKey = crypto.createHash('sha256').update(rawBuffer).digest();
-          }
-          if (this.dpapiAvailable) {
-            try {
-              const wrapped = 'DPAPI:' + this.dpapiEncrypt(this.encryptionKey.toString('base64'));
-              fs.writeFileSync(this.vaultKeyPath, wrapped, { mode: 0o600 });
-            } catch (wrapErr) {}
-          }
+        const probeKey = 'antigravity_probe_' + Date.now();
+        execFileSync('/usr/bin/security', [
+          'add-generic-password', '-a', 'antigravity-probe', '-s', probeKey, '-w', 'probe_val', '-U'
+        ], { timeout: 3000, stdio: 'ignore' });
+        const probeVal = execFileSync('/usr/bin/security', [
+          'find-generic-password', '-a', 'antigravity-probe', '-s', probeKey, '-w'
+        ], { encoding: 'utf8', timeout: 3000 }).trim();
+        execFileSync('/usr/bin/security', [
+          'delete-generic-password', '-a', 'antigravity-probe', '-s', probeKey
+        ], { timeout: 3000, stdio: 'ignore' });
+        if (probeVal === 'probe_val') {
+          this.keychainAvailable = true;
+          this.protectionMechanism = 'keychain';
         }
       } catch (e) {
-        this.encryptionKey = crypto.randomBytes(32);
+        this.keychainAvailable = false;
+      }
+    }
+
+    const existingVaultExists = fs.existsSync(this.vaultPath);
+    const existingKeyExists = fs.existsSync(this.vaultKeyPath);
+
+    // 1. Explicit environment master secret override
+    if (process.env.ENGINE_VAULT_KEY) {
+      this.encryptionKey = crypto.createHash('sha256').update(process.env.ENGINE_VAULT_KEY).digest();
+      this.protectionMechanism = 'env-master-key';
+      return;
+    }
+
+    // 2. Case C: Existing vault found on disk, but key file is missing -> Fail closed
+    if (existingVaultExists && !existingKeyExists) {
+      this.keyMissingForExistingVault = true;
+      this.keyProtectionError = 'Existing encrypted vault found, but key file is missing. Refusing to generate a replacement key to prevent overwriting existing data.';
+      console.warn(`[CredentialVault] CRITICAL: ${this.keyProtectionError}`);
+      return;
+    }
+
+    // 3. Case B, D, F: Existing key file found -> Load and verify protected key
+    if (existingKeyExists) {
+      this.loadExistingProtectedKey(existingVaultExists);
+      return;
+    }
+
+    // 4. Case A: Genuinely new vault -> Create new key and protect via OS credential store
+    this.createNewProtectedKey();
+  }
+
+  // Case A: Create, protect, and persist a new master key
+  createNewProtectedKey() {
+    const rawKey = crypto.randomBytes(32);
+
+    if (this.dpapiAvailable) {
+      try {
+        const wrapped = 'DPAPI:' + this.dpapiEncrypt(rawKey.toString('base64'));
+        this.writeAtomicKeySync(this.vaultKeyPath, wrapped);
+
+        // Immediate recovery verification
+        const readBack = fs.readFileSync(this.vaultKeyPath, 'utf8');
+        if (!readBack.startsWith('DPAPI:')) {
+          throw new Error('Key file verification failed: missing DPAPI prefix');
+        }
+        const recoveredB64 = this.dpapiDecrypt(readBack.slice(6));
+        const recovered = Buffer.from(recoveredB64, 'base64');
+        if (recovered.length !== 32 || !recovered.equals(rawKey)) {
+          throw new Error('DPAPI key recovery verification mismatch');
+        }
+        this.encryptionKey = rawKey;
+        this.protectionMechanism = 'dpapi';
+      } catch (dpapiErr) {
+        if (fs.existsSync(this.vaultKeyPath)) {
+          try { fs.unlinkSync(this.vaultKeyPath); } catch (e) {}
+        }
+        this.keyProtectionFailed = true;
+        this.keyProtectionError = `Windows DPAPI key protection failed: ${dpapiErr.message}`;
+        console.warn(`[CredentialVault] CRITICAL: ${this.keyProtectionError}`);
+      }
+    } else if (this.keychainAvailable) {
+      try {
+        this.keychainSaveKey(rawKey.toString('base64'));
+        this.writeAtomicKeySync(this.vaultKeyPath, 'KEYCHAIN:antigravity-vault-key');
+        const loadedB64 = this.keychainLoadKey();
+        const recovered = Buffer.from(loadedB64, 'base64');
+        if (recovered.length !== 32 || !recovered.equals(rawKey)) {
+          throw new Error('macOS Keychain key recovery verification mismatch');
+        }
+        this.encryptionKey = rawKey;
+        this.protectionMechanism = 'keychain';
+      } catch (kcErr) {
+        if (fs.existsSync(this.vaultKeyPath)) {
+          try { fs.unlinkSync(this.vaultKeyPath); } catch (e) {}
+        }
+        this.keyProtectionFailed = true;
+        this.keyProtectionError = `macOS Keychain key protection failed: ${kcErr.message}`;
+        console.warn(`[CredentialVault] CRITICAL: ${this.keyProtectionError}`);
       }
     } else {
-      this.encryptionKey = crypto.randomBytes(32);
-      try {
-        const dir = path.dirname(this.vaultKeyPath);
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        if (this.dpapiAvailable) {
-          try {
-            const wrapped = 'DPAPI:' + this.dpapiEncrypt(this.encryptionKey.toString('base64'));
-            fs.writeFileSync(this.vaultKeyPath, wrapped, { mode: 0o600 });
-          } catch (dpapiErr) {
-            fs.writeFileSync(this.vaultKeyPath, this.encryptionKey, { mode: 0o600 });
-          }
-        } else {
-          fs.writeFileSync(this.vaultKeyPath, this.encryptionKey, { mode: 0o600 });
-        }
-      } catch (e) {}
+      // Case E: DPAPI/Keychain unavailable on this platform
+      this.keyProtectionFailed = true;
+      this.keyProtectionError = 'OS-backed secret protection is unavailable (DPAPI/Keychain not active). Refusing to write unprotected raw key to disk. Provide ENGINE_VAULT_KEY in environment to run with an explicit master key.';
+      console.warn(`[CredentialVault] CRITICAL: ${this.keyProtectionError}`);
     }
+  }
+
+  // Case B, D, F: Load existing protected key from disk
+  loadExistingProtectedKey(existingVaultExists) {
+    let rawContent;
+    try {
+      rawContent = fs.readFileSync(this.vaultKeyPath, 'utf8');
+    } catch (readErr) {
+      this.keyDecryptionFailed = true;
+      this.keyProtectionError = `Cannot read key file "${this.vaultKeyPath}": ${readErr.message}`;
+      console.warn(`[CredentialVault] CRITICAL: ${this.keyProtectionError}`);
+      return;
+    }
+
+    // Windows DPAPI protected key
+    if (rawContent.startsWith('DPAPI:')) {
+      if (!this.dpapiAvailable) {
+        this.keyDecryptionFailed = true;
+        this.keyProtectionError = 'Key file is protected with Windows DPAPI, but DPAPI is not available in the current environment.';
+        console.warn(`[CredentialVault] CRITICAL: ${this.keyProtectionError}`);
+        return;
+      }
+      try {
+        const decryptedB64 = this.dpapiDecrypt(rawContent.slice(6));
+        const buf = Buffer.from(decryptedB64, 'base64');
+        if (buf.length !== 32) {
+          throw new Error(`Decrypted key length is invalid (${buf.length} bytes, expected 32)`);
+        }
+        this.encryptionKey = buf;
+        this.protectionMechanism = 'dpapi';
+      } catch (decErr) {
+        this.keyDecryptionFailed = true;
+        this.keyProtectionError = `DPAPI key decryption failed: ${decErr.message}`;
+        console.warn(`[CredentialVault] CRITICAL: ${this.keyProtectionError}`);
+      }
+      return;
+    }
+
+    // macOS Keychain protected key
+    if (rawContent.startsWith('KEYCHAIN:')) {
+      if (!this.keychainAvailable) {
+        this.keyDecryptionFailed = true;
+        this.keyProtectionError = 'Key file specifies macOS Keychain, but Keychain is not available in the current environment.';
+        console.warn(`[CredentialVault] CRITICAL: ${this.keyProtectionError}`);
+        return;
+      }
+      try {
+        const loadedB64 = this.keychainLoadKey();
+        const buf = Buffer.from(loadedB64, 'base64');
+        if (buf.length !== 32) {
+          throw new Error(`Keychain key length is invalid (${buf.length} bytes, expected 32)`);
+        }
+        this.encryptionKey = buf;
+        this.protectionMechanism = 'keychain';
+      } catch (kcErr) {
+        this.keyDecryptionFailed = true;
+        this.keyProtectionError = `Keychain key retrieval failed: ${kcErr.message}`;
+        console.warn(`[CredentialVault] CRITICAL: ${this.keyProtectionError}`);
+      }
+      return;
+    }
+
+    // Handle legacy 32-byte key from existing installations: Upgrade to DPAPI/Keychain immediately
+    let rawBuffer;
+    try {
+      rawBuffer = fs.readFileSync(this.vaultKeyPath);
+    } catch (e) {
+      this.keyDecryptionFailed = true;
+      return;
+    }
+
+    if (rawBuffer.length === 32) {
+      if (this.dpapiAvailable) {
+        try {
+          const wrapped = 'DPAPI:' + this.dpapiEncrypt(rawBuffer.toString('base64'));
+          this.writeAtomicKeySync(this.vaultKeyPath, wrapped);
+          this.encryptionKey = rawBuffer;
+          this.protectionMechanism = 'dpapi';
+          console.log('[CredentialVault] Successfully upgraded legacy key file to Windows DPAPI protection.');
+          return;
+        } catch (upgradeErr) {
+          this.keyDecryptionFailed = true;
+          this.keyProtectionError = `Failed to upgrade legacy key to DPAPI: ${upgradeErr.message}`;
+          console.warn(`[CredentialVault] CRITICAL: ${this.keyProtectionError}`);
+          return;
+        }
+      } else if (this.keychainAvailable) {
+        try {
+          this.keychainSaveKey(rawBuffer.toString('base64'));
+          this.writeAtomicKeySync(this.vaultKeyPath, 'KEYCHAIN:antigravity-vault-key');
+          this.encryptionKey = rawBuffer;
+          this.protectionMechanism = 'keychain';
+          console.log('[CredentialVault] Successfully upgraded legacy key file to macOS Keychain.');
+          return;
+        } catch (upgradeErr) {
+          this.keyDecryptionFailed = true;
+          this.keyProtectionError = `Failed to upgrade legacy key to Keychain: ${upgradeErr.message}`;
+          console.warn(`[CredentialVault] CRITICAL: ${this.keyProtectionError}`);
+          return;
+        }
+      } else {
+        this.keyProtectionFailed = true;
+        this.keyProtectionError = 'Key file contains unprotected raw bytes and OS-backed protection is unavailable.';
+        console.warn(`[CredentialVault] CRITICAL: ${this.keyProtectionError}`);
+        return;
+      }
+    }
+
+    // Malformed key file: Fail closed (NEVER hash arbitrary content to manufacture a replacement key)
+    this.keyDecryptionFailed = true;
+    this.keyProtectionError = `Key file "${this.vaultKeyPath}" contains malformed or unexpected content (expected DPAPI or 32-byte key). Refusing to hash content or manufacture replacement key.`;
+    console.warn(`[CredentialVault] CRITICAL: ${this.keyProtectionError}`);
   }
 
   // Windows DPAPI ProtectedData.Protect using PowerShell via STDIN (Zero secrets in command-line arguments)
@@ -122,6 +344,37 @@ $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [S
       timeout: 5000
     });
     return output.trim();
+  }
+
+  // macOS Keychain storage via /usr/bin/security
+  keychainSaveKey(b64Key) {
+    execFileSync('/usr/bin/security', [
+      'add-generic-password', '-a', 'antigravity-agent', '-s', 'antigravity-vault-key', '-w', b64Key, '-U'
+    ], { timeout: 5000, stdio: 'ignore' });
+  }
+
+  // macOS Keychain retrieval via /usr/bin/security
+  keychainLoadKey() {
+    return execFileSync('/usr/bin/security', [
+      'find-generic-password', '-a', 'antigravity-agent', '-s', 'antigravity-vault-key', '-w'
+    ], { encoding: 'utf8', timeout: 5000 }).trim();
+  }
+
+  // Get verified security and storage protection status
+  getSecurityStatus() {
+    return {
+      protectionMechanism: this.protectionMechanism,
+      dpapiAvailable: this.dpapiAvailable,
+      keychainAvailable: this.keychainAvailable,
+      isOsProtected: this.dpapiAvailable || this.keychainAvailable,
+      isUsable: this.isVaultUsable(),
+      corruptedOnLoad: this.corruptedOnLoad,
+      keyMissing: this.keyMissingForExistingVault,
+      keyDecryptionFailed: this.keyDecryptionFailed,
+      keyProtectionFailed: Boolean(this.keyProtectionFailed),
+      protectionError: this.keyProtectionError || null,
+      credentialsCount: this.credentials.size
+    };
   }
 
   // Encrypt secret value using DPAPI or AES-256-GCM
@@ -177,26 +430,7 @@ $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [S
         decrypted += decipher.final('utf8');
         return decrypted;
       } catch (gcmErr) {
-        // Attempt backward-compatible migration decrypt if previously encrypted before vault key generation
-        try {
-          const machineEntropy = [
-            process.env.USER || process.env.USERNAME || 'antigravity_user',
-            process.arch,
-            process.platform,
-            process.env.COMPUTERNAME || process.env.HOSTNAME || 'localhost',
-            'antigravity_agent_vault_v1'
-          ].join(':');
-          const legacyKey = crypto.scryptSync(machineEntropy, 'antigravity_salt_9921', 32);
-          const iv = Buffer.from(record.iv, 'base64');
-          const tag = Buffer.from(record.tag, 'base64');
-          const decipher = crypto.createDecipheriv('aes-256-gcm', legacyKey, iv);
-          decipher.setAuthTag(tag);
-          let decrypted = decipher.update(record.data, 'base64', 'utf8');
-          decrypted += decipher.final('utf8');
-          return decrypted;
-        } catch (legacyErr) {
-          throw new Error(`Decryption failed: ${gcmErr.message}`);
-        }
+        throw new Error(`AES-256-GCM decryption failed: ${gcmErr.message} (Authentication tag verification failed or key mismatch)`);
       }
     }
 
@@ -205,6 +439,9 @@ $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [S
 
   // Store secret in vault
   storeSecret(id, secretText, metadata = {}) {
+    if (this.corruptedOnLoad || this.keyMissingForExistingVault || this.keyDecryptionFailed) {
+      throw new Error('Refusing to store secret: vault is corrupted or master key is missing/unusable.');
+    }
     if (!id || typeof id !== 'string') {
       throw new Error('Credential ID must be a valid non-empty string');
     }
@@ -304,6 +541,15 @@ $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [S
     if (this.corruptedOnLoad) {
       throw new Error('Refusing to overwrite corrupted vault file on disk. Restore from backup or manually resolve.');
     }
+    if (this.keyMissingForExistingVault) {
+      throw new Error('Refusing to overwrite vault: existing vault key is missing. Restore key file to recover credentials.');
+    }
+    if (this.keyDecryptionFailed) {
+      throw new Error('Refusing to overwrite vault: existing encryption key failed decryption.');
+    }
+    if (this.keyProtectionFailed || !this.isVaultUsable()) {
+      throw new Error(`Refusing to save vault: vault is not in a usable state (${this.keyProtectionError || 'encryption key is not initialized or invalid'}).`);
+    }
 
     const serialized = [];
     for (const [id, record] of this.credentials.entries()) {
@@ -313,6 +559,7 @@ $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [S
     const payload = JSON.stringify({
       version: 1,
       updatedAt: new Date().toISOString(),
+      protectionMechanism: this.protectionMechanism,
       dpapi: this.dpapiAvailable,
       items: serialized
     }, null, 2);
@@ -320,16 +567,33 @@ $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [S
     const dir = path.dirname(this.vaultPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-    const tmpPath = `${this.vaultPath}.tmp.${Date.now()}`;
-    fs.writeFileSync(tmpPath, payload, { mode: 0o600 });
+    const tmpPath = `${this.vaultPath}.tmp.${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    let fd = null;
     try {
-      if (fs.existsSync(this.vaultPath)) {
-        fs.unlinkSync(this.vaultPath);
+      fd = fs.openSync(tmpPath, 'w', 0o600);
+      fs.writeFileSync(fd, payload, 'utf8');
+      try { fs.fsyncSync(fd); } catch (e) {}
+      fs.closeSync(fd);
+      fd = null;
+
+      if (process.platform === 'win32' && fs.existsSync(this.vaultPath)) {
+        try {
+          fs.renameSync(tmpPath, this.vaultPath);
+        } catch (renameErr) {
+          fs.copyFileSync(tmpPath, this.vaultPath);
+          fs.unlinkSync(tmpPath);
+        }
+      } else {
+        fs.renameSync(tmpPath, this.vaultPath);
       }
-      fs.renameSync(tmpPath, this.vaultPath);
-    } catch (e) {
-      fs.copyFileSync(tmpPath, this.vaultPath);
-      fs.unlinkSync(tmpPath);
+    } catch (err) {
+      if (fd !== null) {
+        try { fs.closeSync(fd); } catch (e) {}
+      }
+      if (fs.existsSync(tmpPath)) {
+        try { fs.unlinkSync(tmpPath); } catch (e) {}
+      }
+      throw err;
     }
   }
 
@@ -434,6 +698,9 @@ $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [S
 
   // Key rotation: Re-encrypt all credentials under a newly generated or provided master key
   rotateKey(newKey = null) {
+    if (!this.isVaultUsable()) {
+      throw new Error(`Cannot rotate key: vault is not in a usable state (${this.keyProtectionError || 'corrupted or key missing'}).`);
+    }
     const candidateKey = newKey || crypto.randomBytes(32);
     if (!Buffer.isBuffer(candidateKey) || candidateKey.length !== 32) {
       throw new Error('Rotation key must be a 32-byte Buffer.');
@@ -482,16 +749,17 @@ $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [S
         this.credentials.set(item.id, updatedRecord);
       }
 
-      // Step 4: Persist the new key to disk wrapped by DPAPI if available
+      // Step 4: Persist the new key to disk wrapped by DPAPI/Keychain if available
       if (this.dpapiAvailable) {
-        try {
-          const wrapped = 'DPAPI:' + this.dpapiEncrypt(this.encryptionKey.toString('base64'));
-          fs.writeFileSync(this.vaultKeyPath, wrapped, { mode: 0o600 });
-        } catch (dpErr) {
-          fs.writeFileSync(this.vaultKeyPath, this.encryptionKey, { mode: 0o600 });
-        }
+        const wrapped = 'DPAPI:' + this.dpapiEncrypt(this.encryptionKey.toString('base64'));
+        this.writeAtomicKeySync(this.vaultKeyPath, wrapped);
+      } else if (this.keychainAvailable) {
+        this.keychainSaveKey(this.encryptionKey.toString('base64'));
+        this.writeAtomicKeySync(this.vaultKeyPath, 'KEYCHAIN:antigravity-vault-key');
+      } else if (process.env.ENGINE_VAULT_KEY) {
+        // Explicit environment master key mode - no key file persisted beside vault
       } else {
-        fs.writeFileSync(this.vaultKeyPath, this.encryptionKey, { mode: 0o600 });
+        throw new Error('OS-backed secret protection is unavailable. Refusing to persist unprotected raw key during rotation.');
       }
 
       // Step 5: Save updated vault
@@ -514,6 +782,17 @@ $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [S
       // Rollback on any failure
       this.encryptionKey = originalKey;
       this.credentials = originalCredentials;
+      if (this.dpapiAvailable) {
+        try {
+          const wrapped = 'DPAPI:' + this.dpapiEncrypt(originalKey.toString('base64'));
+          this.writeAtomicKeySync(this.vaultKeyPath, wrapped);
+        } catch (e) {}
+      } else if (this.keychainAvailable) {
+        try {
+          this.keychainSaveKey(originalKey.toString('base64'));
+          this.writeAtomicKeySync(this.vaultKeyPath, 'KEYCHAIN:antigravity-vault-key');
+        } catch (e) {}
+      }
       this.saveVault();
       throw new Error(`Key rotation failed and was rolled back: ${err.message}`);
     }

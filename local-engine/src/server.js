@@ -25,6 +25,24 @@ const crypto = require('crypto');
 
 // Credential Vault: Authoritative secret store (Section 7.1)
 const credentialVault = new CredentialVault();
+if (!credentialVault.isVaultUsable()) {
+  const status = credentialVault.getSecurityStatus();
+  console.error('\n❌ [SERVER STARTUP FATAL ERROR] Credential Vault initialization failed:');
+  if (status.corruptedOnLoad) {
+    console.error('   The credential vault file on disk is corrupted. Restore from backup or resolve manually.');
+  }
+  if (status.keyMissing) {
+    console.error('   An existing encrypted vault was found, but the encryption key file is missing.');
+  }
+  if (status.keyDecryptionFailed) {
+    console.error('   The encryption key for the existing vault failed decryption.');
+  }
+  if (status.keyProtectionFailed) {
+    console.error(`   ${status.protectionError || 'Secure OS key protection failed.'}`);
+  }
+  console.error('   Server cannot start in an insecure or unauthenticated state.\n');
+  process.exit(1);
+}
 
 // Configuration paths: public config.json strictly non-secret
 const configPath = process.env.ENGINE_CONFIG_PATH || path.join(__dirname, '..', 'config.json');
@@ -157,6 +175,13 @@ if (!AUTH_TOKEN) {
   AUTH_TOKEN = crypto.randomBytes(32).toString('hex');
   credentialVault.setAuthToken(AUTH_TOKEN);
   console.log('[Server] Secure persistent authentication token initialized in Credential Vault.');
+}
+
+// Verify that token was persisted and can be retrieved safely
+const verifiedAuthToken = credentialVault.getAuthToken();
+if (!verifiedAuthToken || verifiedAuthToken !== AUTH_TOKEN) {
+  console.error('\n❌ [SERVER STARTUP FATAL ERROR] Authentication token verification failed: could not retrieve persisted token from Credential Vault.\n');
+  process.exit(1);
 }
 
 // Ephemeral pairing state with entropy, 5-minute expiry, lockout, and single-use consumption
