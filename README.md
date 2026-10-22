@@ -154,19 +154,19 @@ Upon startup, an ephemeral **8-character Pairing Code** is displayed in the engi
 Run the verification suite to execute automated unit, security, privacy, and WebSocket integration tests:
 
 ```bash
-# Run all automated test suites (91 checks across unit, autonomous, E2E, and privacy)
+# Run all automated test suites (94 checks across unit, autonomous, E2E, and privacy)
 npm test
 
-# Run unit & security sandbox tests
+# Run unit & security sandbox tests (57 tests)
 npm run test:engine
 
-# Run autonomous ReAct architecture tests
+# Run autonomous ReAct architecture, vault rotation, broker, and permission tests (11 tests)
 npm run test:autonomous
 
-# Run End-to-End WebSocket, Pairing, CORS, and Settings test suite
+# Run End-to-End WebSocket, Pairing, CORS, and Settings test suite (7 tests)
 npm run test:e2e
 
-# Run Privacy-First Sentinel Leak Prevention tests
+# Run Privacy-First Sentinel Leak Prevention tests (19 tests)
 npm run test:privacy
 
 # Run complete diagnostic verification (checks syntax, manifest, secrets, and all test suites)
@@ -177,7 +177,10 @@ npm run verify
 
 ## 🔒 Security Architecture & Secret Isolation
 
-- **Authoritative Encrypted Credential Vault**: API keys and authentication tokens are strictly stored in an encrypted persistent vault backed by Windows DPAPI (with an AES-256-GCM fallback using unguessable 256-bit cryptographically random keys). No plaintext credentials are saved to `config.json` or `.secrets.json`. Legacy plaintext secrets are automatically migrated to encrypted storage and safely retired.
+- **Authoritative Encrypted Credential Vault**: API keys and authentication tokens are strictly stored in an encrypted persistent vault backed by Windows DPAPI (with inputs streamed via STDIN to prevent command-line secret leakage) and an AES-256-GCM hardware-entropy fallback. The vault supports master key rotation (`vault.rotateKey()`), detects tampered authentication tags, and performs idempotent, safe discovery and scrubbing of legacy plaintext credentials from `.env`, `.secrets.json`, and `config.json`.
+- **Genuine Credential Broker Verification**: The Credential Broker verifies credentials via genuine service APIs (e.g. GitHub REST API `/user` check) rather than superficial format or length checks. It strictly distinguishes API token verification from browser web session login (reporting `requiresUserAction` for browser sessions), enforces domain binding to reject lookalike/phishing domains, and ensures read-only grants cannot authorize write operations.
+- **Structured Permission Enforcement & Negative Restrictions**: Supports structured grants (action, resource, scope, lifetime, risk level, issuer, revocation state) with natural language grant parsing. Supports explicit negative restrictions (e.g. "Do not allow file deletion") that take strict precedence over grants, grant revocation ("Revoke permissions"), and inspection of chained shell commands (`&&`, `||`, `;`, `|`).
+- **Empirical Task Verification**: Validates actual outcomes beyond tool return values, verifying file existence/size, file deletion (`!fs.existsSync`), file move/copy integrity, terminal command exit codes, and browser navigation states.
 - **Model Isolation**: Raw API keys, tokens, and passwords never enter LLM prompt contexts, logs, or extension messages. Provider adapters attach credentials internally at the network boundary.
 - **Atomic File Persistence**: Secrets and configuration files are written using atomic `.tmp` file creation, `fsync`, and atomic rename (with fallback collision handling on Windows) to prevent configuration corruption or half-written states.
 - **Loopback Enforcement & CORS**: The engine validates the raw physical socket address (`req.socket.remoteAddress`) for IPv4 `127.0.0.1`, IPv6 `::1`, and IPv4-mapped IPv6 `::ffff:127.0.0.1`, rejecting spoofed Host or proxy headers (`X-Forwarded-For`). Cross-origin requests from arbitrary web pages (`https://...`) are blocked.

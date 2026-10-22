@@ -141,8 +141,18 @@ if (HOST !== '127.0.0.1' && HOST !== 'localhost') {
   console.warn(`\n⚠️  [SECURITY WARNING] Local Engine is bound to non-loopback host "${HOST}". Ensure network isolation.`);
 }
 
-// Token setup: precedence = process.env -> credentialVault -> generate secure random token in vault
-let AUTH_TOKEN = (process.env.ENGINE_AUTH_TOKEN || credentialVault.getAuthToken() || '').trim();
+// Token setup: Vault is authoritative for persistent desktop workflows;
+// process.env.ENGINE_AUTH_TOKEN is supported as an explicit deployment/testing override (Part 2.1)
+let AUTH_TOKEN = '';
+if (process.env.ENGINE_AUTH_TOKEN && process.env.ENGINE_AUTH_TOKEN.trim()) {
+  AUTH_TOKEN = process.env.ENGINE_AUTH_TOKEN.trim();
+  if (credentialVault.getAuthToken() !== AUTH_TOKEN) {
+    credentialVault.setAuthToken(AUTH_TOKEN);
+  }
+} else {
+  AUTH_TOKEN = (credentialVault.getAuthToken() || '').trim();
+}
+
 if (!AUTH_TOKEN) {
   AUTH_TOKEN = crypto.randomBytes(32).toString('hex');
   credentialVault.setAuthToken(AUTH_TOKEN);

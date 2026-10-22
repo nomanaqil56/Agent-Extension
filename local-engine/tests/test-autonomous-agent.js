@@ -154,19 +154,44 @@ async function runAutonomousTestSuite() {
     }
     assert.strictEqual(deniedBlocked, true, 'Broker must block unapproved domain when approval is denied');
 
-    // 4. Authorized domain flow
-    permissionManager.authorizeDomain('github.com');
+    // 4. Genuine verification via adapter / transport
+    credentialBroker.setHttpTransport(async ({ secret }) => {
+      assert.strictEqual(secret, 'ghp_syntheticSuperSecretToken991122');
+      return {
+        authenticated: true,
+        verified: true,
+        username: 'agent_user',
+        accountType: 'User',
+        scopes: 'repo, user',
+        sessionState: 'authorized'
+      };
+    });
+
+    permissionManager.authorizeDomain('github.com', 'read_only');
     const authResult = await credentialBroker.brokerAuthentication({
       credentialId: 'cred_github_test',
-      targetDomain: 'github.com'
+      targetDomain: 'github.com',
+      operation: 'verify'
     });
 
     assert.strictEqual(authResult.success, true);
     assert.strictEqual(authResult.authenticated, true);
+    assert.strictEqual(authResult.verified, true);
     assert.strictEqual(authResult.secret, undefined, 'Broker result must NOT contain raw secret');
     assert.strictEqual(authResult.password, undefined, 'Broker result must NOT contain password');
 
-    // 3. Sanitizer check: observation text containing secret is sanitized
+    // 5. Test web_login rejects API token and requires user action (Part 3)
+    permissionManager.authorizeDomain('github.com', 'write');
+    const webResult = await credentialBroker.brokerAuthentication({
+      credentialId: 'cred_github_test',
+      targetDomain: 'github.com',
+      operation: 'web_login'
+    });
+    assert.strictEqual(webResult.authenticated, false, 'API token cannot authenticate web browser session');
+    assert.strictEqual(webResult.verified, false);
+    assert.strictEqual(webResult.requiresUserAction, true);
+
+    // 6. Sanitizer check: observation text containing secret is sanitized
     const dirtyOutput = 'Logged in with token ghp_syntheticSuperSecretToken991122 successfully';
     const cleanOutput = credentialBroker.sanitizeText(dirtyOutput);
     assert.ok(!cleanOutput.includes('ghp_syntheticSuperSecretToken991122'), 'Sanitizer must scrub raw secrets');
@@ -366,6 +391,105 @@ async function runAutonomousTestSuite() {
 
     assert.strictEqual(result.success, false);
     assert.strictEqual(result.aborted, true);
+  });
+
+  // ==========================================
+  // SECTION 9: Credential Vault Advanced Security (Part 2)
+  // ==========================================
+  await test('Credential Vault: Key rotation, tampered auth tags & legacy .env migration', () => {
+    // 1. Key rotation
+    const testSecretVal = 'super-secret-key-rotation-test-token-7766';
+    credentialVault.storeSecret('rotation_test', testSecretVal, { category: 'provider_key' });
+    assert.strictEqual(credentialVault.getSecret('rotation_test'), testSecretVal);
+
+    const newKey = require('crypto').randomBytes(32);
+    const rotateResult = credentialVault.rotateKey(newKey);
+    assert.strictEqual(rotateResult.success, true);
+    assert.strictEqual(credentialVault.getSecret('rotation_test'), testSecretVal, 'Decryption must succeed under new rotated key');
+
+    // 2. Tampered auth tag fails safe
+    const record = credentialVault.credentials.get('rotation_test');
+    if (record && record.encrypted.method === 'aes-256-gcm') {
+      const originalTag = record.encrypted.tag;
+      record.encrypted.tag = Buffer.from('tamperedtag12345').toString('base64');
+      assert.strictEqual(credentialVault.getSecret('rotation_test'), null, 'Tampered authentication tag must fail decryption');
+      record.encrypted.tag = originalTag;
+    }
+
+    // 3. Legacy .env migration & scrubbing
+    const mockEnvPath = path.join(testTempDir, 'mock_legacy.env');
+    fs.writeFileSync(mockEnvPath, [
+      'ENGINE_PORT=18789',
+      'ENGINE_AUTH_TOKEN=agy_legacyPlaintextTokenToMigrate999',
+      'GEMINI_API_KEY=AIzaSyLegacyKeyToMigrate111',
+      'LOG_LEVEL=debug'
+    ].join('\n'), 'utf8');
+
+    const migResult = credentialVault.migrateLegacyEnvFile(mockEnvPath);
+    assert.strictEqual(migResult.discovered >= 2, true);
+    assert.strictEqual(migResult.scrubbed, true);
+
+    // Verify secrets exist in vault and were scrubbed from .env
+    assert.strictEqual(credentialVault.getSecret('gemini'), 'AIzaSyLegacyKeyToMigrate111');
+    const scrubbedEnvContent = fs.readFileSync(mockEnvPath, 'utf8');
+    assert.ok(!scrubbedEnvContent.includes('AIzaSyLegacyKeyToMigrate111'), 'Plaintext secret must be scrubbed from .env');
+    assert.ok(!scrubbedEnvContent.includes('agy_legacyPlaintextTokenToMigrate999'), 'Plaintext token must be scrubbed from .env');
+    assert.ok(scrubbedEnvContent.includes('ENGINE_PORT=18789'), 'Non-secret settings must be preserved in .env');
+  });
+
+  // ==========================================
+  // SECTION 10: Expanded Permission Manager (Part 4)
+  // ==========================================
+  await test('Permission System: Negative restrictions, grant revocation & chained command defense', () => {
+    // 1. Negative restriction: "Do not allow file deletion"
+    const parsedRestr = permissionManager.parseNaturalLanguageGrant('Do not allow file deletion for this task');
+    assert.strictEqual(parsedRestr.type, 'restriction');
+    assert.strictEqual(parsedRestr.action, 'delete_file');
+    assert.strictEqual(permissionManager.isRestricted('delete_file'), true);
+
+    const deleteRisk = permissionManager.analyzeActionRisk('delete_file', { filePath: path.join(testTempDir, 'some_file.txt') });
+    assert.strictEqual(deleteRisk.allowed, false);
+    assert.strictEqual(deleteRisk.blocked, true, 'Negative restriction must block delete_file');
+    permissionManager.removeRestriction('delete_file');
+
+    // 2. Grant revocation: "Revoke the permission granted earlier"
+    permissionManager.addGrant({ action: 'write_file', resource: testTempDir });
+    assert.strictEqual(permissionManager.isActionCoveredByGrant('write_file', path.join(testTempDir, 'f.txt')), true);
+    const revResult = permissionManager.parseNaturalLanguageGrant('Revoke all permissions granted earlier');
+    assert.strictEqual(revResult.type, 'revocation');
+    assert.strictEqual(permissionManager.isActionCoveredByGrant('write_file', path.join(testTempDir, 'f.txt')), false, 'All grants must be revoked');
+
+    // 3. Chained command injection defense
+    const chainedRisk = permissionManager.analyzeActionRisk('execute_command', {
+      command: 'echo safe && rmdir /s /q c:\\',
+      cwd: testTempDir
+    });
+    assert.strictEqual(chainedRisk.blocked, true, 'Chained malicious sub-command must be blocked');
+  });
+
+  // ==========================================
+  // SECTION 11: Empirical Outcome Verification (Part 5)
+  // ==========================================
+  await test('Empirical Verification: Accurately verifies file deletion, copy, move & browser states', async () => {
+    const orchestrator = new AgentOrchestrator(toolRegistry, null, {}, null, credentialBroker);
+
+    // Prepare files for verification
+    const verifiedFile = path.join(testTempDir, 'verify_delete.txt');
+    fs.writeFileSync(verifiedFile, 'temporary for deletion test');
+    fs.unlinkSync(verifiedFile);
+
+    const stepResults = [
+      { tool: 'delete_file', params: { filePath: verifiedFile }, result: { deleted: true } },
+      { tool: 'create_directory', params: { dirPath: testTempDir }, result: { created: true } },
+      { tool: 'execute_command', params: { command: 'node -v' }, result: { exitCode: 0 } },
+      { tool: 'browser_navigate', params: { url: 'https://example.com' }, result: { url: 'https://example.com' } }
+    ];
+
+    const verifications = await orchestrator.verifyTaskCompletion('Cleanup task', stepResults, {});
+    assert.ok(verifications.some(v => v.includes('File deletion verified') && v.includes('successfully removed')));
+    assert.ok(verifications.some(v => v.includes('Directory verified')));
+    assert.ok(verifications.some(v => v.includes('Passed (Exit Code 0)')));
+    assert.ok(verifications.some(v => v.includes('Browser state verified')));
   });
 
   // Clean up test sandbox

@@ -3,15 +3,23 @@
 // RULE: The AI may request an authorized operation involving a credential,
 // but it must NEVER receive the underlying password, API key, cookie, or token.
 
+const https = require('https');
+
 class CredentialBroker {
-  constructor(credentialVault, permissionManager, auditLogger) {
+  constructor(credentialVault, permissionManager, auditLogger, options = {}) {
     this.vault = credentialVault;
     this.permissionManager = permissionManager;
     this.auditLogger = auditLogger;
+    this.httpTransport = options.httpTransport || null;
     this.adapters = new Map();
 
     // Register built-in authentication adapters for supported services (Section 8)
     this.registerBuiltInAdapters();
+  }
+
+  // Set transport for test injection or offline simulation
+  setHttpTransport(transport) {
+    this.httpTransport = transport;
   }
 
   // Register domain-specific authentication adapter
@@ -21,19 +29,103 @@ class CredentialBroker {
 
   // Built-in adapters for supported domain flows
   registerBuiltInAdapters() {
-    // GitHub API / Token Authentication Adapter
-    this.registerAdapter('github.com', async ({ secret, metadata, targetDomain }) => {
-      // Validate token structure and perform verification
-      if (!secret || typeof secret !== 'string' || secret.length < 8) {
-        return { authenticated: false, verified: false, reason: 'Invalid or malformed credential.' };
+    // GitHub API / Token Authentication Adapter (Genuine Verification per Part 3)
+    this.registerAdapter('github.com', async ({ secret, metadata, targetDomain, operation, abortSignal }) => {
+      // 1. Distinguish browser web session vs API token authentication
+      if (operation === 'web_login' || operation === 'browser_login') {
+        return {
+          authenticated: false,
+          verified: false,
+          requiresUserAction: true,
+          reason: 'GitHub web browser login cannot be performed using an API token. Web session authentication requires interactive browser login or OAuth session.'
+        };
       }
-      // Verified authentication adapter for GitHub
-      return {
-        authenticated: true,
-        verified: true,
-        username: metadata.username || 'github_user',
-        sessionState: 'authorized'
-      };
+
+      // 2. Structural sanity check
+      if (!secret || typeof secret !== 'string' || secret.trim().length < 8) {
+        return {
+          authenticated: false,
+          verified: false,
+          reason: 'Invalid or structurally malformed GitHub credential.'
+        };
+      }
+
+      // 3. Optional injected transport for deterministic unit/offline testing
+      if (this.httpTransport) {
+        return await this.httpTransport({ secret, metadata, targetDomain, operation, abortSignal });
+      }
+
+      // 4. Genuine verification via official GitHub REST API (GET https://api.github.com/user)
+      return new Promise((resolve) => {
+        if (abortSignal?.aborted) {
+          return resolve({ authenticated: false, verified: false, reason: 'Verification aborted.' });
+        }
+
+        const options = {
+          hostname: 'api.github.com',
+          port: 443,
+          path: '/user',
+          method: 'GET',
+          headers: {
+            'User-Agent': 'Antigravity-Agent/1.0',
+            'Authorization': `Bearer ${secret.trim()}`,
+            'Accept': 'application/vnd.github.v3+json'
+          },
+          timeout: 8000
+        };
+
+        const req = https.request(options, (res) => {
+          let data = '';
+          res.on('data', chunk => { data += chunk; });
+          res.on('end', () => {
+            if (res.statusCode === 200) {
+              try {
+                const user = JSON.parse(data);
+                resolve({
+                  authenticated: true,
+                  verified: true,
+                  username: user.login || metadata.username,
+                  accountType: user.type || 'User',
+                  scopes: res.headers['x-oauth-scopes'] || 'default',
+                  sessionState: 'authorized'
+                });
+              } catch (parseErr) {
+                resolve({ authenticated: false, verified: false, reason: 'Malformed JSON response from GitHub API.' });
+              }
+            } else if (res.statusCode === 401 || res.statusCode === 403) {
+              resolve({
+                authenticated: false,
+                verified: false,
+                reason: `GitHub authentication rejected with HTTP ${res.statusCode} (Invalid token or insufficient permissions).`
+              });
+            } else {
+              resolve({
+                authenticated: false,
+                verified: false,
+                reason: `GitHub verification returned unexpected status ${res.statusCode}.`
+              });
+            }
+          });
+        });
+
+        if (abortSignal) {
+          abortSignal.addEventListener('abort', () => {
+            req.destroy(new Error('Verification cancelled'));
+            resolve({ authenticated: false, verified: false, reason: 'Verification aborted.' });
+          });
+        }
+
+        req.on('timeout', () => {
+          req.destroy();
+          resolve({ authenticated: false, verified: false, reason: 'Verification timed out connecting to GitHub API.' });
+        });
+
+        req.on('error', (err) => {
+          resolve({ authenticated: false, verified: false, reason: `Network error during GitHub verification: ${err.message}` });
+        });
+
+        req.end();
+      });
     });
   }
 
@@ -69,6 +161,10 @@ class CredentialBroker {
     onApprovalNeeded = null,
     abortSignal = null
   }) {
+    if (abortSignal?.aborted) {
+      throw new Error('Authentication aborted: task cancelled.');
+    }
+
     if (!credentialId || !targetDomain) {
       throw new Error('Credential Broker requires both credentialId and targetDomain.');
     }
@@ -84,7 +180,9 @@ class CredentialBroker {
     if (metadata.domain) {
       const cleanTarget = targetDomain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0];
       const cleanAllowed = metadata.domain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0];
-      if (cleanTarget !== cleanAllowed && !cleanTarget.endsWith(`.${cleanAllowed}`)) {
+      const isExact = cleanTarget === cleanAllowed;
+      const isSubdomain = cleanTarget.endsWith(`.${cleanAllowed}`) && cleanAllowed.includes('.');
+      if (!isExact && !isSubdomain) {
         this.auditLogger.log({
           action: 'CREDENTIAL_BROKER_BLOCKED',
           credentialId,
@@ -96,8 +194,9 @@ class CredentialBroker {
       }
     }
 
-    // 3. User approval check (Section 8: enforce required user approval)
-    const isDomainAuthorized = this.permissionManager.isDomainAuthorized(targetDomain);
+    // 3. User approval check (Enforce scope: read-only authorization cannot authorize a write)
+    const requiredScope = (operation === 'read' || operation === 'verify') ? 'read_only' : 'write';
+    const isDomainAuthorized = this.permissionManager.isDomainAuthorized(targetDomain, requiredScope);
     if (!isDomainAuthorized) {
       if (!onApprovalNeeded) {
         this.auditLogger.log({
@@ -187,6 +286,7 @@ class CredentialBroker {
         success: false,
         authenticated: false,
         verified: false,
+        requiresUserAction: Boolean(authOutcome?.requiresUserAction),
         credentialId,
         domain: targetDomain,
         reason: authOutcome?.reason || `Authentication verification failed on "${targetDomain}".`

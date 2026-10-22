@@ -11,7 +11,8 @@ class PermissionManager {
     );
     this.pendingApprovals = new Map();
     this.sessionAuthorizations = new Set();
-    this.activeGrants = new Map(); // grantId -> { action, resource, scope, expiresAt, riskLevel }
+    this.activeGrants = new Map(); // grantId -> { action, resource, scope, expiresAt, riskLevel, issuer, revoked }
+    this.restrictedActions = new Set(); // action -> explicitly disallowed actions (negative restrictions)
     this.authorizedDomains = new Map(); // domain -> { scope, authorizedAt, expiresAt }
 
     // Sensitive files patterns that require explicit authorization
@@ -27,6 +28,44 @@ class PermissionManager {
       /\.gitconfig$/i,
       /\.bash_history$/i
     ];
+  }
+
+  // Add a negative restriction (e.g. "Do not allow file deletion")
+  addRestriction(action) {
+    if (!action) return false;
+    this.restrictedActions.add(action.toLowerCase());
+    return true;
+  }
+
+  // Remove a negative restriction
+  removeRestriction(action) {
+    if (!action) return false;
+    return this.restrictedActions.delete(action.toLowerCase());
+  }
+
+  // Check if an action is negatively restricted
+  isRestricted(action) {
+    if (!action) return false;
+    return this.restrictedActions.has(action.toLowerCase());
+  }
+
+  // Revoke a specific permission grant
+  revokeGrant(grantId) {
+    const grant = this.activeGrants.get(grantId);
+    if (!grant) return false;
+    grant.revoked = true;
+    this.activeGrants.delete(grantId);
+    return true;
+  }
+
+  // Revoke all active permission grants
+  revokeAllGrants() {
+    const count = this.activeGrants.size;
+    for (const grant of this.activeGrants.values()) {
+      grant.revoked = true;
+    }
+    this.activeGrants.clear();
+    return count;
   }
 
   // Authorize a domain for authenticated web actions (Section 11)
@@ -66,8 +105,8 @@ class PermissionManager {
     }
   }
 
-  // Add a structured permission grant (Section 12)
-  addGrant({ action, resource, scope = 'task', lifetimeMs = 3600000, riskLevel = 'medium' }) {
+  // Add a structured permission grant (Section 12 & Part 4.1)
+  addGrant({ action, resource, scope = 'task', lifetimeMs = 3600000, riskLevel = 'medium', issuer = 'user' }) {
     if (!action) return null;
     const grantId = `grant_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
     const grant = {
@@ -76,8 +115,10 @@ class PermissionManager {
       resource: resource ? this.canonicalizePath(resource) || resource : null,
       scope,
       riskLevel,
+      issuer,
       createdAt: Date.now(),
-      expiresAt: Date.now() + lifetimeMs
+      expiresAt: Date.now() + lifetimeMs,
+      revoked: false
     };
     this.activeGrants.set(grantId, grant);
     return grant;
@@ -86,12 +127,18 @@ class PermissionManager {
   // Check if an action on a resource is authorized by an active unexpired grant
   isActionCoveredByGrant(action, targetPath = null) {
     if (!action) return false;
-    const now = Date.now();
     const actionNorm = action.toLowerCase();
+
+    // Negative restrictions take strict precedence over grants
+    if (this.restrictedActions.has(actionNorm)) {
+      return false;
+    }
+
+    const now = Date.now();
     const targetCanon = targetPath ? (this.canonicalizePath(targetPath) || targetPath) : null;
 
     for (const [id, grant] of this.activeGrants.entries()) {
-      if (now > grant.expiresAt) {
+      if (grant.revoked || now > grant.expiresAt) {
         this.activeGrants.delete(id);
         continue;
       }
@@ -120,22 +167,72 @@ class PermissionManager {
     return false;
   }
 
-  // Parse natural language permission requests into structured grants (Section 12)
+  // Parse natural language permission requests into structured grants (Part 4.2)
   parseNaturalLanguageGrant(text, defaultDir = null) {
     if (!text || typeof text !== 'string') return null;
     const lower = text.toLowerCase();
 
-    // Check for explicit grant intent
+    // 1. Explicit Revocation intent
+    if (lower.includes('revoke') && (lower.includes('permission') || lower.includes('grant') || lower.includes('earlier') || lower.includes('all'))) {
+      const revokedCount = this.revokeAllGrants();
+      return { type: 'revocation', revokedCount };
+    }
+
+    // 2. Explicit Negative Restriction intent (e.g. "Do not allow file deletion")
+    if (lower.includes('do not allow') || lower.includes('dont allow') || lower.includes('never allow') || lower.includes('block') || lower.includes('disallow')) {
+      if (lower.includes('deletion') || lower.includes('delete file') || lower.includes('deleting')) {
+        this.addRestriction('delete_file');
+        return { type: 'restriction', action: 'delete_file' };
+      }
+      if (lower.includes('terminal') || lower.includes('command') || lower.includes('shell')) {
+        this.addRestriction('execute_command');
+        return { type: 'restriction', action: 'execute_command' };
+      }
+      if (lower.includes('clipboard')) {
+        this.addRestriction('clipboard_read');
+        return { type: 'restriction', action: 'clipboard_read' };
+      }
+    }
+
+    // 3. Check for explicit grant intent
     const hasGrantIntent = (lower.includes('allow') || lower.includes('grant') || lower.includes('permit') || lower.includes('authorize')) &&
-      (lower.includes('without asking') || lower.includes('for this task') || lower.includes('for the whole task') || lower.includes('automatically'));
+      (lower.includes('without asking') || lower.includes('for this task') || lower.includes('for the whole task') || lower.includes('automatically') || lower.includes('in this project') || lower.includes('public pages') || lower.includes('downloads from'));
 
     if (!hasGrantIntent) return null;
 
-    // Detect target action
+    // Browser navigation / Public page reading grant
+    if (lower.includes('reading public pages') || lower.includes('public pages on') || lower.includes('public page')) {
+      // Extract domain if present
+      const domainMatch = text.match(/https?:\/\/([a-zA-Z0-9.-]+)/) || text.match(/on\s+([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i);
+      const domain = domainMatch ? domainMatch[1] : null;
+      if (domain) {
+        this.authorizeDomain(domain, 'read_only');
+      }
+      return this.addGrant({
+        action: 'browser_navigate',
+        resource: domain || '*',
+        scope: 'task',
+        riskLevel: 'low'
+      });
+    }
+
+    // Download file from trusted domain grant
+    if (lower.includes('download') && lower.includes('domain')) {
+      const domainMatch = text.match(/from\s+([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i) || text.match(/https?:\/\/([a-zA-Z0-9.-]+)/);
+      const domain = domainMatch ? domainMatch[1] : null;
+      return this.addGrant({
+        action: 'download_file',
+        resource: domain || '*',
+        scope: 'task',
+        riskLevel: 'medium'
+      });
+    }
+
+    // Detect target action for files or commands
     let action = null;
-    if (lower.includes('write') || lower.includes('modify') || lower.includes('edit') || lower.includes('create file')) {
+    if (lower.includes('write') || lower.includes('modify') || lower.includes('edit') || lower.includes('create file') || lower.includes('creating and editing files')) {
       action = 'write_file';
-    } else if (lower.includes('terminal') || lower.includes('command') || lower.includes('run test') || lower.includes('execute')) {
+    } else if (lower.includes('terminal') || lower.includes('command') || lower.includes('run test') || lower.includes('tests without asking') || lower.includes('execute')) {
       action = 'execute_command';
     }
 
@@ -290,6 +387,17 @@ class PermissionManager {
 
   // Analyze risk level for any requested tool action
   analyzeActionRisk(tool, params = {}) {
+    // 0. Enforce negative restrictions (explicitly blocked actions)
+    if (this.isRestricted(tool)) {
+      return {
+        allowed: false,
+        needsApproval: false,
+        blocked: true,
+        riskLevel: 'forbidden',
+        reason: `Action "${tool}" is explicitly restricted and disallowed by active security policy.`
+      };
+    }
+
     // If tool accesses local filesystem or workspace, enforce that at least one workspace is configured
     const workspaceTools = [
       'list_files', 'search_files', 'read_file', 'file_info',
@@ -475,28 +583,41 @@ class PermissionManager {
           };
         }
 
-        // Check for blocked malicious patterns
-        const blockedPatterns = this.config.security?.blockedShellPatterns || [];
+        // Check for blocked malicious patterns across full command and chained subcommands
+        const subCommands = cmd.split(/;|&&|\|\||\|/).map(c => c.trim()).filter(Boolean);
+        const allTargets = [cmd, ...subCommands];
+
+        const defaultBlockedPatterns = [
+          'format\\s+[a-zA-Z]:',
+          'rmdir\\s+/[sS]\\s+/[qQ]',
+          'del\\s+/[fF]\\s+/[sS]\\s+/[qQ]\\s+[cC]:',
+          ':\\(\\)\\s*\\{\\s*:\\|:&\\s*\\};:',
+          'dd\\s+if=',
+          'mkfs(\\.[a-z0-9]+)?\\s+'
+        ];
+        const blockedPatterns = this.config.security?.blockedShellPatterns || defaultBlockedPatterns;
         for (const pattern of blockedPatterns) {
-          try {
-            if (new RegExp(pattern, 'i').test(cmd)) {
-              return {
-                allowed: false,
-                needsApproval: false,
-                blocked: true,
-                riskLevel: 'forbidden',
-                reason: `Command violates security policy (matched pattern: ${pattern})`
-              };
-            }
-          } catch (e) {
-            if (cmd.toLowerCase().includes(String(pattern).toLowerCase())) {
-              return {
-                allowed: false,
-                needsApproval: false,
-                blocked: true,
-                riskLevel: 'forbidden',
-                reason: `Command violates security policy (matched pattern: ${pattern})`
-              };
+          for (const target of allTargets) {
+            try {
+              if (new RegExp(pattern, 'i').test(target)) {
+                return {
+                  allowed: false,
+                  needsApproval: false,
+                  blocked: true,
+                  riskLevel: 'forbidden',
+                  reason: `Command violates security policy (matched pattern: ${pattern})`
+                };
+              }
+            } catch (e) {
+              if (target.toLowerCase().includes(String(pattern).toLowerCase())) {
+                return {
+                  allowed: false,
+                  needsApproval: false,
+                  blocked: true,
+                  riskLevel: 'forbidden',
+                  reason: `Command violates security policy (matched pattern: ${pattern})`
+                };
+              }
             }
           }
         }

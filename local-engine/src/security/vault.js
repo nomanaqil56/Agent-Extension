@@ -44,11 +44,17 @@ class CredentialVault {
       this.encryptionKey = crypto.createHash('sha256').update(process.env.ENGINE_VAULT_KEY).digest();
     } else if (fs.existsSync(this.vaultKeyPath)) {
       try {
-        const rawKey = fs.readFileSync(this.vaultKeyPath);
-        if (rawKey.length === 32) {
-          this.encryptionKey = rawKey;
+        const rawKey = fs.readFileSync(this.vaultKeyPath, 'utf8');
+        if (rawKey.startsWith('DPAPI:') && this.dpapiAvailable) {
+          const decryptedB64 = this.dpapiDecrypt(rawKey.slice(6));
+          this.encryptionKey = Buffer.from(decryptedB64, 'base64');
         } else {
-          this.encryptionKey = crypto.createHash('sha256').update(rawKey).digest();
+          const rawBuffer = fs.readFileSync(this.vaultKeyPath);
+          if (rawBuffer.length === 32) {
+            this.encryptionKey = rawBuffer;
+          } else {
+            this.encryptionKey = crypto.createHash('sha256').update(rawBuffer).digest();
+          }
         }
       } catch (e) {
         this.encryptionKey = crypto.randomBytes(32);
@@ -58,22 +64,33 @@ class CredentialVault {
       try {
         const dir = path.dirname(this.vaultKeyPath);
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(this.vaultKeyPath, this.encryptionKey, { mode: 0o600 });
+        if (this.dpapiAvailable) {
+          try {
+            const wrapped = 'DPAPI:' + this.dpapiEncrypt(this.encryptionKey.toString('base64'));
+            fs.writeFileSync(this.vaultKeyPath, wrapped, { mode: 0o600 });
+          } catch (dpapiErr) {
+            fs.writeFileSync(this.vaultKeyPath, this.encryptionKey, { mode: 0o600 });
+          }
+        } else {
+          fs.writeFileSync(this.vaultKeyPath, this.encryptionKey, { mode: 0o600 });
+        }
       } catch (e) {}
     }
   }
 
-  // Windows DPAPI ProtectedData.Protect using PowerShell
+  // Windows DPAPI ProtectedData.Protect using PowerShell via STDIN (Zero secrets in command-line arguments)
   dpapiEncrypt(plainText) {
     const b64 = Buffer.from(plainText, 'utf8').toString('base64');
     const script = `
 Add-Type -AssemblyName System.Security;
-$plain = [System.Convert]::FromBase64String('${b64}');
+$in = [System.Console]::In.ReadToEnd().Trim();
+$plain = [System.Convert]::FromBase64String($in);
 $enc = [System.Security.Cryptography.ProtectedData]::Protect($plain, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser);
 [System.Convert]::ToBase64String($enc)
 `.trim();
 
     const output = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      input: b64,
       encoding: 'utf8',
       windowsHide: true,
       timeout: 5000
@@ -81,16 +98,18 @@ $enc = [System.Security.Cryptography.ProtectedData]::Protect($plain, $null, [Sys
     return output.trim();
   }
 
-  // Windows DPAPI ProtectedData.Unprotect using PowerShell
+  // Windows DPAPI ProtectedData.Unprotect using PowerShell via STDIN (Zero secrets in command-line arguments)
   dpapiDecrypt(base64Cipher) {
     const script = `
 Add-Type -AssemblyName System.Security;
-$bytes = [System.Convert]::FromBase64String('${base64Cipher.trim()}');
+$in = [System.Console]::In.ReadToEnd().Trim();
+$bytes = [System.Convert]::FromBase64String($in);
 $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser);
 [System.Text.Encoding]::UTF8.GetString($dec)
 `.trim();
 
     const output = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      input: base64Cipher.trim(),
       encoding: 'utf8',
       windowsHide: true,
       timeout: 5000
@@ -387,6 +406,191 @@ $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [S
       // Non-fatal legacy migration failure: do NOT delete legacy file if parsing or migration fails
       console.warn('[CredentialVault] Migration notice:', e.message);
     }
+
+    // Also migrate and scrub any legacy secrets from .env files
+    try {
+      this.migrateLegacyEnvFile();
+    } catch (envMigrateErr) {
+      console.warn('[CredentialVault] .env migration notice:', envMigrateErr.message);
+    }
+  }
+
+  // Key rotation: Re-encrypt all credentials under a newly generated or provided master key
+  rotateKey(newKey = null) {
+    const candidateKey = newKey || crypto.randomBytes(32);
+    if (!Buffer.isBuffer(candidateKey) || candidateKey.length !== 32) {
+      throw new Error('Rotation key must be a 32-byte Buffer.');
+    }
+
+    // Step 1: Decrypt and extract all existing secrets into memory
+    const decryptedItems = [];
+    for (const [id, record] of this.credentials.entries()) {
+      try {
+        const plain = this.decryptValue(record.encrypted);
+        if (plain === null || plain === undefined) {
+          throw new Error(`Failed to decrypt credential "${id}" during rotation.`);
+        }
+        decryptedItems.push({ id, plain, metadata: record });
+      } catch (err) {
+        throw new Error(`Rotation aborted: cannot decrypt credential "${id}": ${err.message}`);
+      }
+    }
+
+    // Backup state in case of failure
+    const originalKey = this.encryptionKey;
+    const originalCredentials = new Map(this.credentials);
+
+    try {
+      // Step 2: Switch active encryption key
+      this.encryptionKey = candidateKey;
+
+      // Step 3: Re-encrypt all items under the new key
+      for (const item of decryptedItems) {
+        const iv = crypto.randomBytes(12);
+        const cipher = crypto.createCipheriv('aes-256-gcm', this.encryptionKey, iv);
+        let encrypted = cipher.update(item.plain, 'utf8', 'base64');
+        encrypted += cipher.final('base64');
+        const authTag = cipher.getAuthTag().toString('base64');
+
+        const updatedRecord = {
+          ...item.metadata,
+          encrypted: {
+            method: 'aes-256-gcm',
+            data: encrypted,
+            iv: iv.toString('base64'),
+            tag: authTag
+          },
+          updatedAt: new Date().toISOString()
+        };
+        this.credentials.set(item.id, updatedRecord);
+      }
+
+      // Step 4: Persist the new key to disk wrapped by DPAPI if available
+      if (this.dpapiAvailable) {
+        try {
+          const wrapped = 'DPAPI:' + this.dpapiEncrypt(this.encryptionKey.toString('base64'));
+          fs.writeFileSync(this.vaultKeyPath, wrapped, { mode: 0o600 });
+        } catch (dpErr) {
+          fs.writeFileSync(this.vaultKeyPath, this.encryptionKey, { mode: 0o600 });
+        }
+      } else {
+        fs.writeFileSync(this.vaultKeyPath, this.encryptionKey, { mode: 0o600 });
+      }
+
+      // Step 5: Save updated vault
+      this.saveVault();
+
+      // Step 6: Verify all items can be decrypted with the new key
+      for (const item of decryptedItems) {
+        const verifyPlain = this.getSecret(item.id);
+        if (verifyPlain !== item.plain) {
+          throw new Error(`Verification failed for credential "${item.id}" after key rotation.`);
+        }
+      }
+
+      return {
+        success: true,
+        rotatedItems: decryptedItems.length,
+        timestamp: new Date().toISOString()
+      };
+    } catch (err) {
+      // Rollback on any failure
+      this.encryptionKey = originalKey;
+      this.credentials = originalCredentials;
+      this.saveVault();
+      throw new Error(`Key rotation failed and was rolled back: ${err.message}`);
+    }
+  }
+
+  // Safe migration and scrubbing of plaintext secrets from .env files
+  migrateLegacyEnvFile(envFilePath = null) {
+    const candidatePaths = envFilePath 
+      ? [envFilePath] 
+      : [
+          path.join(__dirname, '..', '..', '.env'),
+          path.join(__dirname, '..', '.env')
+        ];
+
+    const results = { discovered: 0, migrated: 0, scrubbed: false };
+
+    for (const p of candidatePaths) {
+      if (!fs.existsSync(p)) continue;
+      try {
+        const raw = fs.readFileSync(p, 'utf8');
+        const lines = raw.split(/\r?\n/);
+        const secretKeys = ['ENGINE_AUTH_TOKEN', 'GEMINI_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY'];
+        const extracted = {};
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#')) continue;
+          const match = trimmed.match(/^([A-Za-z0-9_]+)=(.*)$/);
+          if (match) {
+            const key = match[1];
+            let val = match[2].trim();
+            if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+              val = val.slice(1, -1);
+            }
+            if (secretKeys.includes(key) && val && val !== 'agy_local_secret_token_default') {
+              extracted[key] = val;
+            }
+          }
+        }
+
+        const entries = Object.entries(extracted);
+        if (entries.length === 0) continue;
+
+        results.discovered += entries.length;
+        let allVerified = true;
+
+        for (const [key, val] of entries) {
+          let id = 'auth_token';
+          let category = 'system_token';
+          let provider = 'system';
+
+          if (key === 'GEMINI_API_KEY') { id = 'gemini'; category = 'provider_key'; provider = 'gemini'; }
+          else if (key === 'OPENAI_API_KEY') { id = 'openai'; category = 'provider_key'; provider = 'openai'; }
+          else if (key === 'ANTHROPIC_API_KEY') { id = 'anthropic'; category = 'provider_key'; provider = 'anthropic'; }
+
+          if (!this.hasSecret(id)) {
+            this.storeSecret(id, val, { category, provider });
+          }
+
+          const check = this.getSecret(id);
+          if (check === val) {
+            results.migrated++;
+          } else {
+            allVerified = false;
+          }
+        }
+
+        // Scrub secrets from .env ONLY if all secrets are verified in vault
+        if (allVerified && results.migrated > 0) {
+          const scrubbedLines = lines.map(line => {
+            const match = line.trim().match(/^([A-Za-z0-9_]+)=(.*)$/);
+            if (match && secretKeys.includes(match[1])) {
+              return `# ${match[1]}=[MIGRATED_TO_SECURE_VAULT]`;
+            }
+            return line;
+          });
+
+          const tmpEnv = `${p}.tmp.${Date.now()}`;
+          fs.writeFileSync(tmpEnv, scrubbedLines.join('\n'), { mode: 0o600 });
+          try {
+            fs.renameSync(tmpEnv, p);
+          } catch (rErr) {
+            fs.copyFileSync(tmpEnv, p);
+            fs.unlinkSync(tmpEnv);
+          }
+          results.scrubbed = true;
+          console.log(`[CredentialVault] Successfully migrated and scrubbed secrets from "${p}".`);
+        }
+      } catch (err) {
+        console.warn(`[CredentialVault] Note during .env migration on "${p}":`, err.message);
+      }
+    }
+
+    return results;
   }
 }
 

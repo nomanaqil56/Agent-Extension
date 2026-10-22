@@ -103,6 +103,52 @@ class AgentOrchestrator {
       }
     }
 
+    // Verify file deletion
+    const deleteSteps = stepResults.filter(s => s.tool === 'delete_file');
+    for (const step of deleteSteps) {
+      const filePath = step.params?.filePath || step.params?.path;
+      if (filePath) {
+        try {
+          const info = await this.toolRegistry.filesTool.fileInfo({ filePath });
+          if (!info.exists) {
+            verifications.push(`File deletion verified: "${filePath}" successfully removed`);
+          } else {
+            verifications.push(`File deletion warning: "${filePath}" still exists on disk`);
+          }
+        } catch (e) {
+          verifications.push(`Could not verify deletion of "${filePath}": ${e.message}`);
+        }
+      }
+    }
+
+    // Verify file copy and move
+    const copyMoveSteps = stepResults.filter(s => s.tool === 'copy_file' || s.tool === 'move_file');
+    for (const step of copyMoveSteps) {
+      const src = step.params?.source || step.params?.src || step.params?.filePath;
+      const dst = step.params?.destination || step.params?.dest || step.params?.targetPath;
+      if (dst) {
+        try {
+          const dstInfo = await this.toolRegistry.filesTool.fileInfo({ filePath: dst });
+          if (dstInfo.exists) {
+            if (step.tool === 'move_file') {
+              const srcInfo = src ? await this.toolRegistry.filesTool.fileInfo({ filePath: src }) : { exists: false };
+              if (!srcInfo.exists) {
+                verifications.push(`File move verified: "${src}" successfully moved to "${dst}"`);
+              } else {
+                verifications.push(`File move warning: destination exists but source "${src}" was not removed`);
+              }
+            } else {
+              verifications.push(`File copy verified: "${dst}" exists (${dstInfo.sizeBytes} bytes)`);
+            }
+          } else {
+            verifications.push(`File operation warning: target "${dst}" does not exist`);
+          }
+        } catch (e) {
+          verifications.push(`Could not verify file ${step.tool}: ${e.message}`);
+        }
+      }
+    }
+
     // Verify directory creation
     const dirSteps = stepResults.filter(s => s.tool === 'create_directory');
     for (const step of dirSteps) {
@@ -123,6 +169,16 @@ class AgentOrchestrator {
       if (step.result && typeof step.result.exitCode === 'number') {
         const status = step.result.exitCode === 0 ? 'Passed (Exit Code 0)' : `Failed (Exit Code ${step.result.exitCode})`;
         verifications.push(`Command \`${step.params?.command}\`: ${status}`);
+      }
+    }
+
+    // Verify browser actions
+    const browserSteps = stepResults.filter(s => s.tool === 'browser_navigate' || s.tool === 'browser_click');
+    for (const step of browserSteps) {
+      if (step.result && step.result.url) {
+        verifications.push(`Browser state verified: URL is "${step.result.url}"`);
+      } else if (step.tool === 'browser_navigate' && step.params?.url) {
+        verifications.push(`Browser navigation performed for "${step.params.url}"`);
       }
     }
 

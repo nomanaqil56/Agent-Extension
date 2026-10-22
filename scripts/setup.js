@@ -26,44 +26,52 @@ try {
 
 const crypto = require('crypto');
 
-// 2. Setup Environment Variables & Secure Credentials
-console.log('\n🔑 2/3 Configuring environment variables & secure credentials...');
+// 2. Setup Environment Variables & Authoritative Credential Vault
+console.log('\n🔑 2/3 Configuring authoritative Credential Vault & non-secret settings...');
 const generatedToken = `agy_${crypto.randomBytes(24).toString('hex')}`;
 const configJsonPath = path.join(engineDir, 'config.json');
 
-if (!fs.existsSync(envFile)) {
-  let envTemplate = fs.existsSync(envExample) ? fs.readFileSync(envExample, 'utf8') : '';
-  if (!envTemplate) {
-    envTemplate = `ENGINE_PORT=3721\nENGINE_AUTH_TOKEN=\nENGINE_HOST=127.0.0.1\n`;
-  }
-  const envContent = envTemplate.replace(/ENGINE_AUTH_TOKEN=.*/, `ENGINE_AUTH_TOKEN=${generatedToken}`);
-  fs.writeFileSync(envFile, envContent, 'utf8');
-  console.log('   ✓ Created local-engine/.env with cryptographically generated security token.');
-} else {
-  // Check if .env is using the insecure default token
-  let existingEnv = fs.readFileSync(envFile, 'utf8');
-  if (existingEnv.includes('agy_local_secret_token_default')) {
-    existingEnv = existingEnv.replace(/ENGINE_AUTH_TOKEN=agy_local_secret_token_default/, `ENGINE_AUTH_TOKEN=${generatedToken}`);
-    fs.writeFileSync(envFile, existingEnv, 'utf8');
-    console.log('   ✓ Replaced insecure default token in local-engine/.env with secure generated token.');
-  } else {
-    console.log('   ✓ local-engine/.env already configured.');
-  }
-}
-
-// Store security token in encrypted Credential Vault (Section 7.1 & 7.2)
+// Store security token in authoritative encrypted Credential Vault (Section 7.1 & 7.2)
 try {
   const CredentialVault = require(path.join(engineDir, 'src', 'security', 'vault.js'));
   const vault = new CredentialVault();
   vault.initSecurity();
   if (!vault.getAuthToken()) {
     vault.setAuthToken(generatedToken);
-    console.log('   ✓ Security token securely stored in encrypted Credential Vault.');
+    console.log('   ✓ Security token securely stored in authoritative Credential Vault.');
   } else {
-    console.log('   ✓ Security token already configured in encrypted Credential Vault.');
+    console.log('   ✓ Security token already configured in authoritative Credential Vault.');
   }
 } catch (e) {
   console.warn('   ! Credential Vault setup note:', e.message);
+}
+
+// Ensure .env exists with non-secret settings only (never plaintext tokens)
+if (!fs.existsSync(envFile)) {
+  let envTemplate = fs.existsSync(envExample) ? fs.readFileSync(envExample, 'utf8') : '';
+  if (!envTemplate) {
+    envTemplate = `ENGINE_PORT=3721\nENGINE_HOST=127.0.0.1\n`;
+  }
+  // Strip any token assignments from .env
+  const sanitizedEnv = envTemplate
+    .split(/\r?\n/)
+    .filter(line => !line.trim().startsWith('ENGINE_AUTH_TOKEN='))
+    .join('\n');
+  fs.writeFileSync(envFile, sanitizedEnv.trim() + '\n', 'utf8');
+  console.log('   ✓ Initialized local-engine/.env with non-secret configuration settings.');
+} else {
+  // Scrub any legacy plaintext tokens from existing .env
+  let existingEnv = fs.readFileSync(envFile, 'utf8');
+  if (existingEnv.includes('ENGINE_AUTH_TOKEN=')) {
+    const scrubbedEnv = existingEnv
+      .split(/\r?\n/)
+      .map(line => line.trim().startsWith('ENGINE_AUTH_TOKEN=') ? '# ENGINE_AUTH_TOKEN=[STORED_IN_SECURE_VAULT]' : line)
+      .join('\n');
+    fs.writeFileSync(envFile, scrubbedEnv, 'utf8');
+    console.log('   ✓ Removed plaintext tokens from local-engine/.env (secured in Credential Vault).');
+  } else {
+    console.log('   ✓ local-engine/.env already configured (non-secret settings).');
+  }
 }
 
 // Remove secrets from tracked config.json if present
