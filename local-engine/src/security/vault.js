@@ -15,6 +15,7 @@ class CredentialVault {
     this.isWindows = process.platform === 'win32';
     this.dpapiAvailable = false;
     this.encryptionKey = null;
+    this.corruptedOnLoad = false;
 
     this.vaultKeyPath = process.env.ENGINE_VAULT_KEY_PATH || `${this.vaultPath}.key`;
     this.initSecurity();
@@ -54,6 +55,12 @@ class CredentialVault {
             this.encryptionKey = rawBuffer;
           } else {
             this.encryptionKey = crypto.createHash('sha256').update(rawBuffer).digest();
+          }
+          if (this.dpapiAvailable) {
+            try {
+              const wrapped = 'DPAPI:' + this.dpapiEncrypt(this.encryptionKey.toString('base64'));
+              fs.writeFileSync(this.vaultKeyPath, wrapped, { mode: 0o600 });
+            } catch (wrapErr) {}
           }
         }
       } catch (e) {
@@ -294,6 +301,10 @@ $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [S
 
   // Atomically persist vault to disk
   saveVault() {
+    if (this.corruptedOnLoad) {
+      throw new Error('Refusing to overwrite corrupted vault file on disk. Restore from backup or manually resolve.');
+    }
+
     const serialized = [];
     for (const [id, record] of this.credentials.entries()) {
       serialized.push(record);
@@ -337,6 +348,12 @@ $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [S
       }
     } catch (e) {
       console.warn('[CredentialVault] Warning loading vault:', e.message);
+      this.corruptedOnLoad = true;
+      try {
+        const backupCorruptPath = `${this.vaultPath}.corrupt.${Date.now()}`;
+        fs.copyFileSync(this.vaultPath, backupCorruptPath);
+        console.warn(`[CredentialVault] Corrupted vault backed up to: ${backupCorruptPath}`);
+      } catch (backupErr) {}
     }
   }
 

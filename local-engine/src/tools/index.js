@@ -345,6 +345,9 @@ class ToolRegistry {
 
       try {
         const approvalRes = await Promise.race([promise, abortPromise]);
+        if (!approvalRes || !approvalRes.approved) {
+          throw new Error(`Action "${toolName}" was denied by user.`);
+        }
         if (record && record.paramHash) {
           const crypto = require('crypto');
           const currentHash = crypto.createHash('sha256').update(JSON.stringify(params || {})).digest('hex');

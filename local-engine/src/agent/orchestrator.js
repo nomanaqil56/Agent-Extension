@@ -93,7 +93,16 @@ class AgentOrchestrator {
         try {
           const info = await this.toolRegistry.filesTool.fileInfo({ filePath });
           if (info.exists && info.sizeBytes > 0) {
-            verifications.push(`File verified: "${filePath}" exists (${info.sizeBytes} bytes)`);
+            if (step.tool === 'patch_file' && step.params?.replacementContent) {
+              const fileContent = await this.toolRegistry.filesTool.readFile({ filePath, maxLines: 500 });
+              if (fileContent && typeof fileContent.content === 'string' && fileContent.content.includes(step.params.replacementContent)) {
+                verifications.push(`File patch verified: "${filePath}" contains expected content (${info.sizeBytes} bytes)`);
+              } else {
+                verifications.push(`File patch warning: replacement content not confirmed in "${filePath}"`);
+              }
+            } else {
+              verifications.push(`File verified: "${filePath}" exists (${info.sizeBytes} bytes)`);
+            }
           } else {
             verifications.push(`File verification warning: "${filePath}" is missing or empty`);
           }

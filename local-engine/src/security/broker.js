@@ -132,7 +132,7 @@ class CredentialBroker {
   // Find adapter matching target domain
   findAdapter(domain) {
     if (!domain) return null;
-    const clean = domain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0];
+    const clean = domain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0].split(':')[0];
     for (const [pattern, adapter] of this.adapters.entries()) {
       if (clean === pattern || clean.endsWith(`.${pattern}`)) {
         return adapter;
@@ -178,8 +178,8 @@ class CredentialBroker {
 
     // 2. Domain binding verification: Prevent using credential for malicious phishing domains
     if (metadata.domain) {
-      const cleanTarget = targetDomain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0];
-      const cleanAllowed = metadata.domain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0];
+      const cleanTarget = targetDomain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0].split(':')[0];
+      const cleanAllowed = metadata.domain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0].split(':')[0];
       const isExact = cleanTarget === cleanAllowed;
       const isSubdomain = cleanTarget.endsWith(`.${cleanAllowed}`) && cleanAllowed.includes('.');
       if (!isExact && !isSubdomain) {
@@ -232,8 +232,17 @@ class CredentialBroker {
         }
       });
 
-      // Wait for user approval
-      await promise;
+      // Wait for user approval and verify approved outcome
+      const approvalOutcome = await promise;
+      if (!approvalOutcome || !approvalOutcome.approved) {
+        this.auditLogger.log({
+          action: 'CREDENTIAL_BROKER_APPROVAL_DENIED',
+          credentialId,
+          targetDomain,
+          reason: 'User denied authentication approval request.'
+        });
+        throw new Error(`Authentication request for "${targetDomain}" was denied by user.`);
+      }
     }
 
     // 4. Retrieve secret strictly inside protected broker

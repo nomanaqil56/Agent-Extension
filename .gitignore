@@ -30,3 +30,8 @@ Thumbs.db
 
 # Temporary files
 *.tmp
+*.tmp.*
+*.corrupt.*
+*.vault.enc.corrupt.*
+*.vault.enc.tmp.*
+

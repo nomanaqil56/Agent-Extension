@@ -492,6 +492,76 @@ async function runAutonomousTestSuite() {
     assert.ok(verifications.some(v => v.includes('Browser state verified')));
   });
 
+  // ==========================================
+  // SECTION 12: Vault Corruption Safety, Active Grants & Fail-Closed Approvals
+  // ==========================================
+  await test('Security & Verification: Corrupted vault protection, active grants listing & fail-closed approvals', async () => {
+    // 1. Vault corruption protection: corrupt file must NOT be silently overwritten
+    const corruptVaultPath = path.join(testTempDir, 'corrupt.vault.enc');
+    fs.writeFileSync(corruptVaultPath, '{ this is invalid json content !!');
+    const corruptVault = new CredentialVault(corruptVaultPath);
+    assert.strictEqual(corruptVault.corruptedOnLoad, true, 'corruptedOnLoad must be set true when parsing fails');
+    assert.throws(() => {
+      corruptVault.saveVault();
+    }, /Refusing to overwrite corrupted vault file/);
+
+    // 2. PermissionManager: listActiveGrants() and domain support
+    const grantObj = permissionManager.addGrant({
+      action: 'write_file',
+      resource: testTempDir,
+      scope: 'task',
+      domain: 'api.github.com'
+    });
+    assert.ok(grantObj.grantId);
+    assert.strictEqual(grantObj.domain, 'api.github.com');
+    const activeList = permissionManager.listActiveGrants();
+    assert.ok(activeList.some(g => g.grantId === grantObj.grantId));
+    permissionManager.revokeGrant(grantObj.grantId);
+    const afterRevokeList = permissionManager.listActiveGrants();
+    assert.ok(!afterRevokeList.some(g => g.grantId === grantObj.grantId));
+
+    // 3. Sensitive file patterns: .vault.enc, secrets.json, .p12 must require authorization
+    assert.strictEqual(permissionManager.isSensitiveFile('my_secret.vault.enc'), true);
+    assert.strictEqual(permissionManager.isSensitiveFile('prod.secrets.json'), true);
+    assert.strictEqual(permissionManager.isSensitiveFile('client.p12'), true);
+
+    // 4. Tools execute: Denied approval fails closed
+    let approvalHandlerCalled = false;
+    let approvalErrorCaught = false;
+    try {
+      await toolRegistry.execute('delete_file', { filePath: path.join(testTempDir, 'protected.txt') }, (approvalReq) => {
+        approvalHandlerCalled = true;
+        // User explicitly denies the request
+        permissionManager.resolveApproval(approvalReq.approvalId, false);
+      });
+    } catch (err) {
+      approvalErrorCaught = true;
+      assert.ok(err.message.includes('denied'), `Expected denied message, got: ${err.message}`);
+    }
+    assert.strictEqual(approvalHandlerCalled, true, 'Approval callback must be triggered');
+    assert.strictEqual(approvalErrorCaught, true, 'Denied approval must throw error and not execute');
+
+    // 5. Empirical patch verification: Checks replacement content presence
+    const patchFile = path.join(testTempDir, 'patch_target.txt');
+    fs.writeFileSync(patchFile, 'const port = 3000;\nconst host = "localhost";\n');
+    const orchestrator = new AgentOrchestrator(toolRegistry, null, {}, null, credentialBroker);
+    const patchSteps = [
+      {
+        tool: 'patch_file',
+        params: {
+          filePath: patchFile,
+          targetContent: 'const port = 3000;',
+          replacementContent: 'const port = 8080;'
+        },
+        result: { patched: true }
+      }
+    ];
+    // Actually patch the file
+    fs.writeFileSync(patchFile, 'const port = 8080;\nconst host = "localhost";\n');
+    const patchVerifications = await orchestrator.verifyTaskCompletion('Update port', patchSteps, {});
+    assert.ok(patchVerifications.some(v => v.includes('File patch verified') && v.includes('contains expected content')));
+  });
+
   // Clean up test sandbox
   try {
     fs.rmSync(testTempDir, { recursive: true, force: true });

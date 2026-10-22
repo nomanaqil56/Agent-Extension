@@ -18,10 +18,15 @@ class PermissionManager {
     // Sensitive files patterns that require explicit authorization
     this.sensitiveFilePatterns = [
       /\.env(\..+)?$/i,
+      /\.vault\.enc/i,
       /id_rsa/i,
       /id_ed25519/i,
       /\.pem$/i,
       /\.key$/i,
+      /\.p12$/i,
+      /\.pfx$/i,
+      /\.keystore$/i,
+      /secrets\.json$/i,
       /credentials/i,
       /shadow$/i,
       /passwd$/i,
@@ -68,10 +73,24 @@ class PermissionManager {
     return count;
   }
 
+  // List all currently active, unexpired, non-revoked grants
+  listActiveGrants() {
+    const now = Date.now();
+    const result = [];
+    for (const [id, grant] of this.activeGrants.entries()) {
+      if (grant.revoked || now > grant.expiresAt) {
+        this.activeGrants.delete(id);
+        continue;
+      }
+      result.push({ ...grant });
+    }
+    return result;
+  }
+
   // Authorize a domain for authenticated web actions (Section 11)
   authorizeDomain(domain, scope = 'read_only', lifetimeMs = 3600000) {
     if (!domain || typeof domain !== 'string') return false;
-    const clean = domain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0];
+    const clean = domain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0].split(':')[0];
     this.authorizedDomains.set(clean, {
       domain: clean,
       scope,
@@ -83,7 +102,7 @@ class PermissionManager {
 
   isDomainAuthorized(domain, requiredScope = 'read_only') {
     if (!domain || typeof domain !== 'string') return false;
-    const clean = domain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0];
+    const clean = domain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0].split(':')[0];
     const auth = this.authorizedDomains.get(clean);
     if (!auth) return false;
     if (Date.now() > auth.expiresAt) {
@@ -99,14 +118,14 @@ class PermissionManager {
     if (!url || typeof url !== 'string') return null;
     try {
       const parsed = new URL(url.startsWith('http') ? url : `https://${url}`);
-      return parsed.hostname.toLowerCase().replace(/^www\./, '');
+      return parsed.hostname.toLowerCase().replace(/^www\./, '').split(':')[0];
     } catch (e) {
       return null;
     }
   }
 
   // Add a structured permission grant (Section 12 & Part 4.1)
-  addGrant({ action, resource, scope = 'task', lifetimeMs = 3600000, riskLevel = 'medium', issuer = 'user' }) {
+  addGrant({ action, resource, scope = 'task', lifetimeMs = 3600000, riskLevel = 'medium', issuer = 'user', domain = null }) {
     if (!action) return null;
     const grantId = `grant_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
     const grant = {
@@ -116,6 +135,7 @@ class PermissionManager {
       scope,
       riskLevel,
       issuer,
+      domain: domain ? domain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0].split(':')[0] : null,
       createdAt: Date.now(),
       expiresAt: Date.now() + lifetimeMs,
       revoked: false
