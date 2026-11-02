@@ -112,18 +112,27 @@
         </div>
       </div>
 
-      <!-- Status & Artifacts Toolbar (Above Composer - As in agent_panel_toolbar.png) -->
-      <div id="above-composer-bar" class="agy-above-composer-bar" style="display:none;">
+      <!-- Status & Artifacts Toolbar (Above Composer - Exact Antigravity IDE Match) -->
+      <div id="above-composer-bar" class="agy-above-composer-bar">
         <div class="agy-above-left">
-          <span class="agy-files-label">Files Edited</span>
-          <div id="above-file-chips" class="agy-chips-strip"></div>
+          <button id="btn-above-back" class="agy-above-arrow-btn" title="Back">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+              <path fill-rule="evenodd" d="M15 8a.5.5 0 0 0-.5-.5H2.707l3.147-3.146a.5.5 0 1 0-.708-.708l-4 4a.5.5 0 0 0 0 .708l4 4a.5.5 0 0 0 .708-.708L2.707 8.5H14.5A.5.5 0 0 0 15 8z"/>
+            </svg>
+          </button>
+          <svg class="agy-above-doc-icon" width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M4 1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V4.5L9.5 1H4zm5 1v3h3L9 2zM5 7h6v1H5V7zm0 2h6v1H5V9zm0 2h4v1H5v-1z"/>
+          </svg>
+          <span id="above-files-label" class="agy-above-files-text">0 Files With ...</span>
+          <div id="above-file-chips" class="agy-chips-strip" style="display:none;"></div>
         </div>
         <div class="agy-above-right">
           <button id="btn-review-changes" class="agy-review-changes-btn" title="Review Changes">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M2 3h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zm1 2v6h10V5H3z"/>
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M14 1a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h12zM2 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2H2z"/>
+              <path d="M4 4h8v1H4V4zm0 3h8v1H4V7zm0 3h5v1H4v-1z"/>
             </svg>
-            Review Changes
+            <span>Review Changes</span>
           </button>
         </div>
       </div>
@@ -133,13 +142,9 @@
 
         <!-- Initial State Workspace Title (Exact match to editor_agent_panel.png) -->
         <div class="agy-workspace-title-box" id="welcome-card">
-          <h1 class="agy-workspace-title" id="workspace-title-display">persimmon_website</h1>
+          <h1 class="agy-workspace-title" id="workspace-title-display">Agent Workspace</h1>
         </div>
 
-        <!-- Autocomplete Popovers -->
-        <!-- Slash Command Popover (/plan, /goal, /schedule, /grill-me, /learn) -->
-        <div id="slash-command-menu" class="agy-autocomplete-popover" style="display:none;">
-          <div class="agy-popover-header">Commands</div>
         <!-- The Composer Card -->
         <div class="agy-composer-card" id="composer-card">
 
@@ -278,37 +283,29 @@
 
           <!-- Main Textarea Input -->
           <div class="agy-composer-input-row">
-            <textarea id="user-input" class="agy-composer-textarea" rows="2" placeholder="Ask anything (Ctrl+L), @ to mention, / for workflows"></textarea>
+            <textarea id="user-input" class="agy-composer-textarea" rows="2" placeholder="Ask anything, @ to mention, / for actions"></textarea>
           </div>
 
-          <!-- Composer Bottom Controls (Exact match to Antigravity IDE) -->
+          <!-- Composer Bottom Controls (Exact 1:1 match to Antigravity IDE) -->
           <div class="agy-composer-toolbar">
             <!-- Left Controls: Plus Button, Mode Selector, Model Selector -->
             <div class="agy-toolbar-left">
               <!-- Add Context Button (+) -->
               <button id="btn-composer-add-context" class="agy-toolbar-icon-btn" title="Add Context" aria-label="Add Context">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor">
                   <path d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5a.75.75 0 0 1-1.5 0v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5A.75.75 0 0 1 8 2z"/>
                 </svg>
               </button>
 
-              <!-- Agent Mode Selector Pill (Planning / Normal / Fast) -->
-              <div class="agy-mode-pill-btn" id="btn-composer-mode" title="Switch Agent Mode">
-                <svg class="agy-chevron-icon" width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
-                  <path d="M7.247 11.14 2.451 5.658C1.885 5.013 2.345 4 3.204 4h9.592a1 1 0 0 1 .753 1.659l-4.796 5.48a1 1 0 0 1-1.506 0z"/>
-                </svg>
-                <span id="active-mode-label">Planning</span>
-              </div>
-
-              <!-- Model Selector Pill (Inside composer bottom row!) -->
+              <!-- Model Selector Pill (Exact Antigravity IDE layout: Model Name + Up Chevron) -->
               <div class="agy-model-pill-btn" id="btn-composer-model" title="Select Model">
+                <span id="active-model-label" class="agy-truncate-model">Gemini 3.8 Flash High</span>
                 <svg class="agy-chevron-icon" width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
-                  <path d="M7.247 11.14 2.451 5.658C1.885 5.013 2.345 4 3.204 4h9.592a1 1 0 0 1 .753 1.659l-4.796 5.48a1 1 0 0 1-1.506 0z"/>
+                  <path d="M7.247 4.86l-4.796 5.481c-.566.647-.106 1.659.753 1.659h9.592a1 1 0 0 0 .753-1.659l-4.796-5.48a1 1 0 0 0-1.506 0z"/>
                 </svg>
-                <span id="active-model-label" class="agy-truncate-model">Gemini 3 Pro Preview</span>
                 <!-- Native select styled seamlessly inside the pill -->
                 <select id="model-select" class="agy-composer-model-select">
-                  <option value="gemini" selected>Gemini 3 Pro Preview</option>
+                  <option value="gemini" selected>Gemini 3.8 Flash High</option>
                   <option value="gemini-pro">Gemini 3.8 Pro</option>
                   <option value="hybrid">Hybrid Routing</option>
                   <option value="claude">Claude 3.5 Sonnet</option>
@@ -316,6 +313,14 @@
                   <option value="ollama">Local Ollama</option>
                   <option value="fallback">Autonomous Engine</option>
                 </select>
+              </div>
+
+              <!-- Agent Mode Selector Pill (Optional toggle) -->
+              <div class="agy-mode-pill-btn" id="btn-composer-mode" title="Switch Agent Mode" style="display:none;">
+                <span id="active-mode-label">Planning</span>
+                <svg class="agy-chevron-icon" width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M7.247 4.86l-4.796 5.481c-.566.647-.106 1.659.753 1.659h9.592a1 1 0 0 0 .753-1.659l-4.796-5.48a1 1 0 0 0-1.506 0z"/>
+                </svg>
               </div>
 
               <!-- Trigger Mention Button (@) (Hidden in clean mode, kept for JS) -->
@@ -326,10 +331,10 @@
             <div class="agy-toolbar-right">
               <!-- Voice Dictation Button (Ctrl+M) -->
               <button id="voice-btn" class="agy-toolbar-icon-btn voice" title="Voice Input (Ctrl+M)" aria-label="Voice Input">
-                <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
-                  <path d="M8 12a3 3 0 0 0 3-3V4a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/>
-                  <path d="M13 8a.5.5 0 0 1 .5.5 5.5 5.5 0 0 1-11 0 .5.5 0 0 1 1 0 4.5 4.5 0 1 0 9 0 .5.5 0 0 1 .5-.5z"/>
-                  <path d="M8 13.5v2m-2 0h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <path d="M8 1.5a2.5 2.5 0 0 0-2.5 2.5v4.5a2.5 2.5 0 0 0 5 0V4A2.5 2.5 0 0 0 8 1.5z"/>
+                  <path d="M12.5 6.5v2a4.5 4.5 0 0 1-9 0v-2" stroke-linecap="round"/>
+                  <path d="M8 13v2m-2.5 0h5" stroke-linecap="round"/>
                 </svg>
               </button>
 
@@ -343,7 +348,7 @@
               <!-- Send / Stop Button (Exact Antigravity IDE 28px Circle) -->
               <button id="send-btn" class="agy-send-circle-btn" title="Send message (Enter)" aria-label="Send message" disabled>
                 <!-- Arrow forward icon (when idle) -->
-                <svg id="send-btn-icon" class="agy-send-icon" width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <svg id="send-btn-icon" class="agy-send-icon" width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
                   <path fill-rule="evenodd" d="M1 8a.5.5 0 0 1 .5-.5h11.793l-3.147-3.146a.5.5 0 0 1 .708-.708l4 4a.5.5 0 0 1 0 .708l-4 4a.5.5 0 0 1-.708-.708L13.293 8.5H1.5A.5.5 0 0 1 1 8z"/>
                 </svg>
                 <!-- Stop square (when running) -->
@@ -355,9 +360,9 @@
         </div>
 
         <!-- Recent Task Row in Empty State (Exact match to editor_agent_panel.png) -->
-        <div class="agy-recent-task-row" id="recent-task-row">
-          <span class="agy-recent-title" id="recent-task-title">Persimmon Website Creation</span>
-          <span class="agy-recent-time" id="recent-task-time">2h</span>
+        <div class="agy-recent-task-row" id="recent-task-row" style="display:none;">
+          <span class="agy-recent-title" id="recent-task-title"></span>
+          <span class="agy-recent-time" id="recent-task-time"></span>
         </div>
 
         <!-- Footer Disclaimer (Exact match to editor_agent_panel.png) -->

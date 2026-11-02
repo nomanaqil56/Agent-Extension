@@ -8,14 +8,14 @@ if (typeof window !== 'undefined' && (!window.chrome || !window.chrome.runtime |
     conversations: {
       'conv_default': {
         id: 'conv_default',
-        title: 'Persimmon Website Creation',
+        title: 'New conversation',
         createdAt: new Date().toISOString(),
         updatedAt: new Date(Date.now() - 7200000).toISOString(),
         messages: []
       }
     },
     activeConversationId: 'conv_default',
-    approvedWorkspaces: ['D:\\Coding\\Projects\\persimmon_website'],
+    approvedWorkspaces: [],
     selectedProvider: 'gemini'
   };
   window.chrome = window.chrome || {};
@@ -207,8 +207,6 @@ document.addEventListener('DOMContentLoaded', () => {
     syncActiveModelLabel();
     chrome.storage.local.set({ selectedProvider: modelSelect.value });
     if (settingProvider) settingProvider.value = modelSelect.value;
-    appendSystemNotice(`Active model switched to: ${modelSelect.options[modelSelect.selectedIndex].text}`);
-    recordMessage({ type: 'system', content: `Switched provider to ${modelSelect.value}` });
   });
 
   // Context checkbox pills toggle styling
@@ -321,6 +319,16 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnPanelClose) {
     btnPanelClose.addEventListener('click', () => {
       createNewConversation();
+    });
+  }
+
+  // Workspace Title click opens Settings drawer
+  if (workspaceTitleDisplay) {
+    workspaceTitleDisplay.title = 'Click to configure approved workspaces & settings';
+    workspaceTitleDisplay.addEventListener('click', () => {
+      loadWorkspaces();
+      checkProviderHealth();
+      openDrawer(drawerSettings);
     });
   }
 
@@ -562,7 +570,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const last = list[0].replace(/\\/g, '/').split('/').filter(Boolean).pop();
             if (last) workspaceTitleDisplay.textContent = last;
           } else {
-            workspaceTitleDisplay.textContent = 'persimmon_website';
+            workspaceTitleDisplay.textContent = 'Agent Workspace';
           }
         }
       });
@@ -585,9 +593,7 @@ document.addEventListener('DOMContentLoaded', () => {
             renderActiveConversation();
           };
         } else {
-          recentTaskRow.style.display = 'flex';
-          if (recentTaskTitle) recentTaskTitle.textContent = 'Persimmon Website Creation';
-          if (recentTaskTime) recentTaskTime.textContent = '2h';
+          recentTaskRow.style.display = 'none';
         }
       }
       return;
@@ -844,10 +850,6 @@ document.addEventListener('DOMContentLoaded', () => {
     userInput.value = '';
     userInput.style.height = 'auto';
     hideAutocompleteMenus();
-
-    // Remove welcome card on first message if present
-    const existingWelcome = document.getElementById('welcome-card');
-    if (existingWelcome) existingWelcome.remove();
 
     // Add user message to UI & persist
     appendUserMessage(promptText, attachedScreenshot);
@@ -1189,12 +1191,91 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function formatToolTitle(tool, params) {
+    if (!tool) return 'Action';
+    if (tool === 'verify_ids') return 'Verify Ids';
+    if (tool === 'check_dup_ids') return 'Check Dup Ids';
+    if (tool === 'validate_tags') return 'Validate Tags';
+
+    // Convert snake_case or camelCase to Title Case
+    const clean = tool.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]/g, ' ');
+    const title = clean.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+
+    if (params) {
+      if (params.targetFile || params.TargetFile || params.path) {
+        const file = (params.targetFile || params.TargetFile || params.path).replace(/\\/g, '/').split('/').filter(Boolean).pop();
+        if (file) return `${title}: ${file}`;
+      } else if (params.CommandLine || params.command) {
+        const cmd = (params.CommandLine || params.command).split(' ')[0];
+        if (cmd) return `${title} (${cmd})`;
+      }
+    }
+    return title;
+  }
+
   function appendAgentMessageDom(text) {
     const card = document.createElement('div');
     card.className = 'agy-chat-msg agent';
-    card.innerHTML = `
-      <div class="agy-task-description">${formatMarkdown(text)}</div>
-    `;
+
+    // Check if offline companion message
+    if (text.includes('Local Engine Offline') || text.includes('companion service is not connected')) {
+      card.innerHTML = `
+        <div class="agy-ide-assistant-card">
+          <div class="agy-assistant-header">
+            <span class="agy-assistant-badge">Companion Engine</span>
+            <span class="agy-assistant-status-tag">Offline</span>
+          </div>
+          <p class="agy-assistant-p">The local companion engine is not running. To allow the agent to execute filesystem, terminal, and browser automation tools, launch it in your terminal:</p>
+          <div class="agy-ide-code-block">
+            <div class="agy-ide-code-header">
+              <span>terminal</span>
+              <button class="agy-ide-copy-btn" data-code="npm run start:engine">
+                <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/></svg>
+                Copy
+              </button>
+            </div>
+            <pre><code>npm run start:engine</code></pre>
+          </div>
+          <div class="agy-assistant-footer">
+            <span>Then click <strong>Reconnect</strong> in <a href="#" class="agy-inline-settings-link" id="link-open-settings">Settings</a>.</span>
+          </div>
+        </div>
+      `;
+      const linkSettings = card.querySelector('#link-open-settings');
+      if (linkSettings) {
+        linkSettings.addEventListener('click', (e) => {
+          e.preventDefault();
+          loadWorkspaces();
+          checkProviderHealth();
+          openDrawer(drawerSettings);
+        });
+      }
+    } else {
+      card.innerHTML = `
+        <div class="agy-task-description">${formatMarkdown(text)}</div>
+        <div class="agy-msg-actions-row">
+          <button class="agy-msg-action-icon-btn copy-msg" title="Copy response">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/></svg>
+          </button>
+          <button class="agy-msg-action-icon-btn thumb-btn" title="Good response">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M8.864.046C7.908-.193 7.02.53 6.956 1.466c-.072 1.051-.23 2.016-.428 2.59-.125.36-.314.743-.585 1.109-.27.367-.58.68-.934.908l-.13.085c-.417.265-.9.412-1.397.412h-.826A1.5 1.5 0 0 0 1.156 8v5a1.5 1.5 0 0 0 1.5 1.5h1.22c.49 0 .964.137 1.373.385l.135.083c.35.215.65.51.912.859.262.35.446.716.57 1.063.193.553.35 1.48.423 2.49.066.906.924 1.604 1.848 1.374.877-.218 1.503-.98 1.547-1.884.053-1.07.135-2.072.317-2.92.179-.838.487-1.472.937-1.921.45-.45 1.083-.758 1.921-.937.848-.182 1.85-.264 2.92-.317.904-.044 1.666-.67 1.884-1.547.23-.924-.468-1.782-1.374-1.848-1.01-.073-1.937-.23-2.49-.423-.347-.124-.713-.308-1.063-.57-.35-.262-.644-.562-.86-.912l-.082-.135a3.46 3.46 0 0 1-.385-1.373V6.377c0-.528.21-1.033.586-1.408l.128-.128c.366-.366.586-.87.586-1.398V2.5A1.5 1.5 0 0 0 13.844 1h-1.22a3.46 3.46 0 0 1-1.373-.385l-.135-.083a3.46 3.46 0 0 1-.912-.859 4.9 4.9 0 0 1-.57-1.063A13.2 13.2 0 0 1 9.21.122C9.096.082 8.98.058 8.864.046z"/></svg>
+          </button>
+          <button class="agy-msg-action-icon-btn thumb-btn" title="Bad response">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M7.136 15.954c.956.239 1.844-.484 1.908-1.42.072-1.051.23-2.016.428-2.59.125-.36.314-.743.585-1.109.27-.367.58-.68.934-.908l.13-.085c.417-.265.9-.412 1.397-.412h.826A1.5 1.5 0 0 0 14.844 8V3A1.5 1.5 0 0 0 13.344 1.5h-1.22a3.46 3.46 0 0 1-1.373-.385l-.135-.083a3.46 3.46 0 0 1-.912-.859 4.9 4.9 0 0 1-.57-1.063C8.94 1.657 8.783.73 8.71-.28c-.066-.906-.924-1.604-1.848-1.374-.877.218-1.503.98-1.547 1.884-.053 1.07-.135 2.072-.317 2.92-.179.838-.487 1.472-.937 1.921-.45.45-1.083.758-1.921.937-.848.182-1.85.264-2.92.317-.904.044-1.666.67-1.884 1.547-.23.924.468 1.782 1.374 1.848 1.01.073 1.937.23 2.49.423.347.124.713.308 1.063.57.35.262.644.562.86.912l.082.135c.408.248.883.385 1.373.385v1.065c0 .528-.21 1.033-.586 1.408l-.128.128c-.366.366-.586.87-.586 1.398v.943A1.5 1.5 0 0 0 2.156 15h1.22c.49 0 .964.137 1.373.385l.135.083c.35.215.65.51.912.859.262.35.446.716.57 1.063.193.553.35 1.48.423 2.49.066.906.924 1.604 1.848 1.374z"/></svg>
+          </button>
+        </div>
+      `;
+
+      const copyBtn = card.querySelector('.copy-msg');
+      if (copyBtn) {
+        copyBtn.addEventListener('click', () => {
+          navigator.clipboard.writeText(text);
+          copyBtn.style.color = 'var(--accent-green)';
+          setTimeout(() => { copyBtn.style.color = ''; }, 1500);
+        });
+      }
+    }
+
     chatMessages.appendChild(card);
     currentStreamingBubble = null;
     scrollChat();
@@ -1250,18 +1331,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderToolStepDom(tool, params) {
+    const stepId = `step-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     const card = document.createElement('div');
-    card.className = 'agy-ide-step-card';
-    card.id = `step-${Date.now()}`;
-
-    let iconSvg = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M5.5 3.5A1.5 1.5 0 0 1 7 2h2a1.5 1.5 0 0 1 1.5 1.5V4h1.75A1.75 1.75 0 0 1 14 5.75v7.5A1.75 1.75 0 0 1 12.25 15H3.75A1.75 1.75 0 0 1 2 13.25v-7.5A1.75 1.75 0 0 1 3.75 4H5.5v-.5z"/></svg>';
-    if (tool.includes('command') || tool.includes('exec') || tool.includes('bash')) {
-      iconSvg = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M0 2a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V2zm5.854 4.146a.5.5 0 1 0-.708.708L7.293 9 5.146 11.146a.5.5 0 0 0 .708.708l2.5-2.5a.5.5 0 0 0 0-.708l-2.5-2.5zM9 11.5a.5.5 0 0 0 0 1h3a.5.5 0 0 0 0-1H9z"/></svg>';
-    } else if (tool.includes('file') || tool.includes('edit') || tool.includes('replace')) {
-      iconSvg = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M4 1h8a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1zm1 2v10h6V3H5z"/></svg>';
-    } else if (tool.includes('browser') || tool.includes('tab') || tool.includes('click')) {
-      iconSvg = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="1.5"/></svg>';
-    }
+    card.className = 'agy-tool-pill-wrapper';
+    card.id = stepId;
 
     let payloadHtml = '';
     if (params && params.CommandLine) {
@@ -1269,22 +1342,34 @@ document.addEventListener('DOMContentLoaded', () => {
     } else if (params && (params.TargetFile || params.path)) {
       payloadHtml = `Target: ${escapeHtml(params.TargetFile || params.path)}`;
       if (params.ReplacementContent) {
-        payloadHtml += `\n<span class="agy-ide-diff-line-add">+ ${escapeHtml(params.ReplacementContent)}</span>`;
+        payloadHtml += `\n<span class="agy-diff-add">+ ${escapeHtml(params.ReplacementContent)}</span>`;
       }
     } else {
       payloadHtml = escapeHtml(JSON.stringify(params, null, 2));
     }
 
+    const title = formatToolTitle(tool, params);
+
     card.innerHTML = `
-      <div class="agy-ide-step-header">
-        <div class="agy-ide-step-meta">
-          <span class="agy-ide-step-icon">${iconSvg}</span>
-          <span>${escapeHtml(tool)}</span>
-        </div>
-        <span class="agy-ide-step-badge running">Running...</span>
+      <div class="agy-tool-pill-button" data-toggle="${stepId}">
+        <span class="agy-tool-pill-code-icon">&lt;&gt;</span>
+        <span class="agy-tool-pill-title">${escapeHtml(title)}</span>
+        <span class="agy-tool-pill-status-dot running"></span>
+        <svg class="agy-tool-pill-chevron" width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M4.646 1.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 0 .708l-6 6a.5.5 0 0 1-.708-.708L10.293 8 4.646 2.354a.5.5 0 0 1 0-.708z"/>
+        </svg>
       </div>
-      <div class="agy-ide-step-body">${payloadHtml}</div>
+      <div class="agy-tool-pill-body" style="display:none;">${payloadHtml}</div>
     `;
+
+    card.querySelector('.agy-tool-pill-button').addEventListener('click', () => {
+      card.classList.toggle('open');
+      const body = card.querySelector('.agy-tool-pill-body');
+      if (body) {
+        body.style.display = card.classList.contains('open') ? 'block' : 'none';
+      }
+    });
+
     chatMessages.appendChild(card);
     scrollChat();
   }
@@ -1297,18 +1382,25 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderToolResultDom(tool, result, error) {
-    const lastCard = chatMessages.querySelector('.agy-ide-step-card:last-child');
-    if (lastCard) {
-      const badge = lastCard.querySelector('.agy-ide-step-badge');
-      if (badge) {
-        badge.className = `agy-ide-step-badge ${error ? 'error' : 'success'}`;
-        badge.textContent = error ? 'Failed' : 'Completed';
+    const lastWrapper = chatMessages.querySelector('.agy-tool-pill-wrapper:last-child');
+    if (lastWrapper) {
+      const dot = lastWrapper.querySelector('.agy-tool-pill-status-dot');
+      if (dot) {
+        dot.className = `agy-tool-pill-status-dot ${error ? 'error' : ''}`;
       }
-      if (result && typeof result === 'object' && result.output) {
-        const body = lastCard.querySelector('.agy-ide-step-body');
-        if (body) {
-          body.innerHTML += `\n\n<span style="color:var(--text-dim);">Output:</span>\n${escapeHtml(result.output)}`;
+      const body = lastWrapper.querySelector('.agy-tool-pill-body');
+      if (body && (result || error)) {
+        let outputText = '';
+        if (error) {
+          outputText = String(error);
+        } else if (typeof result === 'object' && result.output) {
+          outputText = result.output;
+        } else if (typeof result === 'string') {
+          outputText = result;
+        } else {
+          outputText = JSON.stringify(result, null, 2);
         }
+        body.innerHTML += `\n\n<span style="color:${error ? 'var(--status-red)' : '#818cf8'};">${error ? 'Error' : 'Result'}:</span>\n${escapeHtml(outputText)}`;
       }
     }
   }
@@ -1562,7 +1654,7 @@ document.addEventListener('DOMContentLoaded', () => {
     isConnected = Boolean(connected);
     if (isConnected) {
       if (engineStatusText) engineStatusText.textContent = `ONLINE :${port}`;
-      if (engineStatusDot) engineStatusDot.className = 'agy-status-dot-sm connected';
+      if (engineStatusDot) engineStatusDot.className = 'agy-status-dot-sm online connected';
     } else if (authFailed) {
       if (engineStatusText) engineStatusText.textContent = 'AUTH FAILED';
       if (engineStatusDot) engineStatusDot.className = 'agy-status-dot-sm';

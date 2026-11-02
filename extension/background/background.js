@@ -31,7 +31,11 @@ chrome.runtime.onInstalled.addListener(async () => {
   
   // Enable sidepanel on action icon click
   if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
-    await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+    try {
+      await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+    } catch (err) {
+      console.warn('[Antigravity Background] setPanelBehavior not supported or failed:', err);
+    }
   }
 
   // Set default stored configurations
@@ -47,7 +51,11 @@ chrome.runtime.onInstalled.addListener(async () => {
 // Re-enable side panel behavior on startup
 chrome.runtime.onStartup.addListener(async () => {
   if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
-    await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+    try {
+      await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+    } catch (err) {
+      console.warn('[Antigravity Background] setPanelBehavior startup failed:', err);
+    }
   }
   connectToLocalEngine();
 });
